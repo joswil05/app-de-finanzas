@@ -1,0 +1,10 @@
+name = "finanzas-ai"
+main = "src/index.ts"
+compatibility_date = "2026-10-15"
+workers_dev = false
+upload_source_maps = false
+send_metrics = false
+
+# Bindings and authenticated endpoints arrive in T18/T20.
+# Secrets must be supplied with wrangler secret put, never committed.
+# FIREBASE_PROJECT_ID, ALLOWED_ORIGINS, GROQ_MODEL are environment-specific.

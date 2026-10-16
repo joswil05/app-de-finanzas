@@ -1,0 +1,9 @@
+name = "finanzas-reminders"
+main = "src/index.ts"
+compatibility_date = "2026-10-15"
+workers_dev = false
+upload_source_maps = false
+send_metrics = false
+
+# No cron until the authenticated reminder flow is implemented and verified in T19.
+# FCM_SERVICE_ACCOUNT_JSON is supplied outside the repository via wrangler secret put.

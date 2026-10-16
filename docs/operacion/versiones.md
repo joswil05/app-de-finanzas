@@ -56,6 +56,12 @@ Vite requiere Node 20.19+/22.12+ ([guía oficial](https://vite.dev/guide/)). Fir
 | zod | 4.6.7 | [npm metadata](https://registry.npmjs.org/zod) |
 ## Comandos y límites de la base
 
+Los paquetes compartidos usan bibliotecas de tipos ES2023+DOM para TextEncoder, structuredClone y WebCrypto, APIs disponibles en Node24, navegador y Workers. Esto no autoriza acoplar dominio a window/document/almacenamiento del navegador. TypeScript 6 exige rootDir explícito al emitir; los builds de paquetes usan la raíz del monorepositorio y conservan rutas en dist para comprobar también fuentes locales importadas. Los exports privados siguen apuntando a src y los consumidores Vite/Wrangler empaquetan esas fuentes; los paquetes no se publican como distribuciones Node independientes.
+
+Vite lee .env desde la raíz del repositorio (envDir), junto a .env.example. Copiar solo los valores de configuración pública; los secretos de servidor no pertenecen a .env del cliente.
+
+Utilidad de pruebas de persistencia añadida por T05: fake-indexeddb 6.2.5, Node >=18 ([metadatos oficiales](https://registry.npmjs.org/fake-indexeddb)).
+
 npm run dev sirve la app local. npm run typecheck revisa configuraciones/tests y los seis espacios. npm run lint revisa fuentes. npm test incluye solo setup, contratos, dominio, data, workers, ai y UI; excluye rules/e2e. npm run test:rules usa exclusivamente Vitest rules con emuladores Auth/Firestore y proyecto ficticio demo-finanzas. npm run test:e2e usa Playwright con emuladores y build servido, en Chromium/escritorio y perfiles móviles Chromium/WebKit. Los perfiles móviles no certifican hardware real.
 
 npm run build compila los paquetes, crea la app y empaqueta Workers mediante wrangler deploy --dry-run: ese comando no publica. Los Workers bootstrap responden 503 y no implementan integraciones. No hay cron configurado. El plugin PWA está instalado, pero un único service worker Workbox+FCM se integrará en T19/T22; esta base no promete disponibilidad offline.
