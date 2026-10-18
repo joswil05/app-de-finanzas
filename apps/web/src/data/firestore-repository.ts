@@ -11,7 +11,7 @@ export interface RevisionTransport {
   subscribe(next: (batch: RemoteRevisionBatch) => void, error: (cause: unknown) => void): () => void;
 }
 export type RepositoryDependencies = { outbox: IndexedDbOutbox; guard: SessionOwnerGuard; transport: RevisionTransport; persistenceReady: Promise<PersistenceReadiness>; assertCurrentSession?: () => void };
-class InvalidRemoteRevisionError extends Error {
+export class InvalidRemoteRevisionError extends Error {
   constructor(cause: unknown) { super('INVALID_REMOTE_REVISION: financial history requires review', { cause }); }
 }
 
@@ -65,6 +65,7 @@ export class FirestoreRevisionRepository implements RevisionRepository {
   private readonly confirmedIds = new Set<string>();
   private local: OutboxEntry[] = [];
   private remoteRejected = 0;
+  private listenerFailed = false;
   private persistence: PersistenceReadiness = { state: 'unavailable', code: 'PERSISTENCE_NOT_READY' };
   private receiveQueue: Promise<void> = Promise.resolve();
   private status: SyncStatus;
@@ -91,11 +92,19 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     this.stop = this.dependencies.transport.subscribe((batch) => {
       // Hashing and persisting manifests is asynchronous. Preserve listener event order;
       // a slow earlier cache event must never overwrite a newer authoritative manifest.
-      this.receiveQueue = this.receiveQueue.then(() => this.receive(batch)).catch(() => this.quarantineRemote());
+      this.receiveQueue = this.receiveQueue.then(() => this.closed ? undefined : this.receive(batch)).catch(() => this.quarantineRemote());
     }, (cause) => {
-      if (this.closed) return;
-      if (cause instanceof InvalidRemoteRevisionError) this.quarantineRemote();
-      else { this.status = { ...this.status, mode: 'error', hydrated: false }; this.emit(); }
+      // Errors and decode failures share the same order as next events. A previous
+      // slow manifest write cannot publish recovery after a newer listener error.
+      this.receiveQueue = this.receiveQueue.then(() => {
+        if (this.closed) return;
+        if (cause instanceof InvalidRemoteRevisionError) this.quarantineRemote();
+        else {
+          this.listenerFailed = true;
+          this.status = { ...this.status, mode: 'error', hydrated: false };
+          this.emit();
+        }
+      }).catch(() => this.quarantineRemote());
     });
     for (const entry of this.local) if (entry.state === 'pending') this.dispatch(entry.revision);
   }
@@ -125,6 +134,7 @@ export class FirestoreRevisionRepository implements RevisionRepository {
       if (known && financialContent(known) !== financialContent(entry.revision)) await this.dependencies.outbox.reject(entry.revisionId, 'REVISION_ID_COLLISION');
     }
     if (this.closed) return;
+    this.listenerFailed = !cacheReady;
     this.status = { ...this.status, hydrated: cacheReady, mode: this.persistence.state !== 'persistent' || (batch.fromCache && !cacheReady) ? 'error' : batch.fromCache ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : (batch.hasPendingWrites ? 'syncing' : 'synced') };
     if (!batch.fromCache && !batch.hasPendingWrites) this.status.lastSyncedAt = new Date().toISOString();
     await this.refresh();
@@ -133,6 +143,7 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     if (this.closed) return;
     // The entire batch remains outside the trusted projection; retain prior valid data with incomplete status.
     this.remoteRejected = 1;
+    this.listenerFailed = true;
     this.status = { ...this.status, mode: 'error', hydrated: false, rejected: this.local.filter((entry) => entry.state === 'rejected').length + 1 };
     this.emit();
   }
@@ -143,7 +154,7 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     const rejected = localRejected + this.remoteRejected;
     const pending = this.local.length - localRejected;
     const durable = this.persistence.state === 'persistent';
-    this.status = { ...this.status, pending, rejected, durable, hydrated: !durable || this.remoteRejected ? false : this.status.hydrated, mode: !durable || rejected ? 'error' : pending ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : this.status.mode };
+    this.status = { ...this.status, pending, rejected, durable, hydrated: !durable || this.remoteRejected || this.listenerFailed ? false : this.status.hydrated, mode: !durable || rejected || this.listenerFailed ? 'error' : pending ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : this.status.mode };
     this.emit();
   }
   private emit(): void {
@@ -151,7 +162,10 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     try { this.assertActive(); } catch { return; }
     const revisions = new Map(this.remote);
     for (const entry of this.local) {
-      if (entry.state === 'rejected') continue;
+      if (entry.state === 'rejected') {
+        if (!this.confirmedIds.has(entry.revisionId)) revisions.delete(entry.revisionId);
+        continue;
+      }
       // A rejected or colliding command is recovery evidence, never authority over
       // an immutable revision already confirmed by the server/cache manifest.
       if (!this.confirmedIds.has(entry.revisionId)) revisions.set(entry.revisionId, entry.revision);
@@ -174,7 +188,7 @@ export class FirestoreRevisionRepository implements RevisionRepository {
       this.remote.set(revision.id, revision);
       this.confirmedIds.add(revision.id);
       await this.dependencies.outbox.acknowledge(revision.id);
-      this.status = { ...this.status, mode: 'synced', lastSyncedAt: new Date().toISOString() };
+      this.status = { ...this.status, mode: this.listenerFailed ? 'error' : 'synced', lastSyncedAt: new Date().toISOString() };
       await this.refresh();
     }, async (cause: unknown) => {
       if (this.closed) return;

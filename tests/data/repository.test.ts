@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Revision } from '@fin/contracts';
 import { projectionToSnapshot } from '@fin/domain';
 import { IndexedDbOutbox } from '../../apps/web/src/data/outbox';
-import { FirestoreRevisionRepository, type RevisionTransport } from '../../apps/web/src/data/firestore-repository';
+import { FirestoreRevisionRepository, InvalidRemoteRevisionError, type RevisionTransport } from '../../apps/web/src/data/firestore-repository';
 import { SessionOwnerGuard, closeSession, loadSessionOwnerGuard } from '../../apps/web/src/data/session-cleanup';
 
 const session = { uid: 'alice', emailVerified: true as const };
@@ -43,6 +43,94 @@ describe('durable UID outbox', () => {
 });
 
 describe('repository completion and session boundary', () => {
+  it('removes an unconfirmed SDK overlay as soon as its command is rejected without waiting for SDK rollback', async () => {
+    const guard = ownerGuard();
+    await guard.markHydrated(session, []);
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    let rejectSend: ((cause: Error) => void) | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { subscribe: (next) => { receive = next; return () => {}; }, send: () => new Promise((_resolve, reject) => { rejectSend = reject; }) }, persistenceReady: persistent });
+    await repository.append(revision);
+    let seen: Revision[] = [];
+    let rejected = 0;
+    repository.subscribe((revisions, status) => { seen = revisions; rejected = status.rejected; });
+    receive?.({ revisions: [revision], fromCache: true, hasPendingWrites: true });
+    await vi.waitFor(() => expect(seen).toEqual([revision]));
+    rejectSend?.(new Error('permission-denied'));
+    await vi.waitFor(() => expect(rejected).toBe(1));
+    expect(seen).toEqual([]);
+    expect(await repository.exportPending()).toEqual([revision]);
+    await repository.close();
+  });
+
+  it.each(['listener-error', 'decode-quarantine'] as const)('keeps %s newer than a slow previous manifest write', async (scenario) => {
+    let writing = false;
+    let writeFinished = false;
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const guard = new SessionOwnerGuard({ ownerUid: 'alice', hydratedUid: null }, async () => { writing = true; await blocked; writeFinished = true; });
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    let fail: Parameters<RevisionTransport['subscribe']>[1] | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { ...neverAck, subscribe: (next, error) => { receive = next; fail = error; return () => {}; } }, persistenceReady: persistent });
+    await repository.exportPending();
+    let latest = { mode: 'syncing', hydrated: false, rejected: 0 };
+    let complete = false;
+    let afterWriteEmissions = 0;
+    repository.subscribe((revisions, status) => { latest = status; complete = projectionToSnapshot(revisions, status, { asOf: '2026-10-18T12:00:00.000Z' }).complete; if (writeFinished) afterWriteEmissions += 1; });
+    receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(writing).toBe(true));
+    fail?.(scenario === 'decode-quarantine' ? new InvalidRemoteRevisionError(new Error('bad payload')) : new Error('permission-denied'));
+    release?.();
+    await vi.waitFor(() => expect(afterWriteEmissions).toBeGreaterThan(0));
+    expect(latest.mode).toBe('error');
+    expect(latest.hydrated).toBe(false);
+    expect(complete).toBe(false);
+    if (scenario === 'decode-quarantine') expect(latest.rejected).toBe(1);
+    await repository.close();
+  });
+  it('keeps a listener error through a late write ACK and recovers only on a later valid history event', async () => {
+    const guard = ownerGuard();
+    await guard.markHydrated(session, []);
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    let fail: Parameters<RevisionTransport['subscribe']>[1] | undefined;
+    let acknowledge: (() => void) | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { subscribe: (next, error) => { receive = next; fail = error; return () => {}; }, send: () => new Promise<void>((resolve) => { acknowledge = resolve; }) }, persistenceReady: persistent });
+    await repository.exportPending();
+    let latest = { mode: 'syncing', hydrated: false };
+    repository.subscribe((_revisions, status) => { latest = status; });
+    receive?.({ revisions: [], fromCache: true, hasPendingWrites: false });
+    await vi.waitFor(() => expect(latest.hydrated).toBe(true));
+    await repository.append(revision);
+    fail?.(new Error('permission-denied'));
+    await vi.waitFor(() => expect(latest.mode).toBe('error'));
+    acknowledge?.();
+    await vi.waitFor(async () => expect(await repository.exportPending()).toEqual([]));
+    expect(latest.mode).toBe('error');
+    expect(latest.hydrated).toBe(false);
+    receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(latest.hydrated).toBe(true));
+    expect(latest.mode).toBe('synced');
+    await repository.close();
+  });
+  it('does not publish queued history or errors after close while a manifest write is still finishing', async () => {
+    let writing = false;
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const guard = new SessionOwnerGuard({ ownerUid: 'alice', hydratedUid: null }, async () => { writing = true; await blocked; });
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    let fail: Parameters<RevisionTransport['subscribe']>[1] | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { ...neverAck, subscribe: (next, error) => { receive = next; fail = error; return () => {}; } }, persistenceReady: persistent });
+    await repository.exportPending();
+    let emissions = 0;
+    repository.subscribe(() => { emissions += 1; });
+    receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(writing).toBe(true));
+    fail?.(new Error('permission-denied'));
+    const beforeClose = emissions;
+    const closing = repository.close();
+    release?.();
+    await closing;
+    expect(emissions).toBe(beforeClose);
+  });
   it('keeps confirmed remote content effective before and after a colliding local rejection and restart', async () => {
     const name = dbName();
     const conflicting = { ...revision, payload: { ...revision.payload as object, name: 'Conflicting local' } };
@@ -53,6 +141,8 @@ describe('repository completion and session boundary', () => {
     let seen: Revision[] = [];
     let rejected = 0;
     repository.subscribe((revisions, status) => { seen = revisions; rejected = status.rejected; });
+    receive?.({ revisions: [conflicting], fromCache: true, hasPendingWrites: true });
+    await vi.waitFor(() => expect(seen).toEqual([conflicting]));
     receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
     await vi.waitFor(() => expect(seen).toEqual([revision]));
     expect(await repository.exportPending()).toEqual([conflicting]);
