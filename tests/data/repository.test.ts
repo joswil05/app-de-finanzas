@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Revision } from '@fin/contracts';
+import { projectionToSnapshot } from '@fin/domain';
 import { IndexedDbOutbox } from '../../apps/web/src/data/outbox';
 import { FirestoreRevisionRepository, type RevisionTransport } from '../../apps/web/src/data/firestore-repository';
 import { SessionOwnerGuard, closeSession, loadSessionOwnerGuard } from '../../apps/web/src/data/session-cleanup';
@@ -10,6 +11,7 @@ const revision: Revision = { schemaVersion: 1, id: 'r1', aggregateId: 'cash', ki
 const dbName = () => `test-${crypto.randomUUID()}`;
 const ownerGuard = () => new SessionOwnerGuard({ ownerUid: 'alice', hydratedUid: 'alice' });
 const neverAck: RevisionTransport = { send: () => new Promise<void>(() => {}), subscribe: () => () => {} };
+const persistent = Promise.resolve({ state: 'persistent' as const });
 
 describe('durable UID outbox', () => {
   it('retains a local command after reopening and isolates identical IDs in two accounts', async () => {
@@ -41,9 +43,151 @@ describe('durable UID outbox', () => {
 });
 
 describe('repository completion and session boundary', () => {
+  it('keeps confirmed remote content effective before and after a colliding local rejection and restart', async () => {
+    const name = dbName();
+    const conflicting = { ...revision, payload: { ...revision.payload as object, name: 'Conflicting local' } };
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    let rejectSend: ((cause: Error) => void) | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard: ownerGuard(), transport: { subscribe: (next) => { receive = next; return () => {}; }, send: () => new Promise((_resolve, reject) => { rejectSend = reject; }) }, persistenceReady: persistent });
+    await repository.append(conflicting);
+    let seen: Revision[] = [];
+    let rejected = 0;
+    repository.subscribe((revisions, status) => { seen = revisions; rejected = status.rejected; });
+    receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(seen).toEqual([revision]));
+    expect(await repository.exportPending()).toEqual([conflicting]);
+    rejectSend?.(new Error('permission-denied'));
+    await vi.waitFor(() => expect(rejected).toBe(1));
+    expect(seen).toEqual([revision]);
+    await repository.close();
+    const restarted = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard: ownerGuard(), transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } }, persistenceReady: persistent });
+    await restarted.exportPending();
+    restarted.subscribe((revisions) => { seen = revisions; });
+    receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(seen).toEqual([revision]));
+    expect(await restarted.exportPending()).toEqual([conflicting]);
+    await restarted.close();
+  });
+
+  it('recovers every allowed string ID, dispatches it after restart and blocks logout until resolved', async () => {
+    const name = dbName();
+    const exotic = { ...revision, id: '\uffffx' };
+    const box = new IndexedDbOutbox(session, name);
+    const bob = new IndexedDbOutbox({ uid: 'bob', emailVerified: true }, name);
+    await box.put(exotic);
+    await bob.put({ ...exotic, payload: null });
+    expect((await box.list()).map((entry) => entry.revision)).toEqual([exotic]);
+    await box.close();
+    const sent: Revision[] = [];
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard: ownerGuard(), transport: { ...neverAck, send: (value) => { sent.push(value); return new Promise(() => {}); } }, persistenceReady: persistent });
+    expect(await repository.exportPending()).toEqual([exotic]);
+    expect(sent).toEqual([exotic]);
+    expect((await bob.list()).map((entry) => entry.revision.payload)).toEqual([null]);
+    await expect(closeSession({ repository, guard: ownerGuard(), clearPersistence: async () => {}, clearUserState: async () => {}, signOut: async () => {} })).rejects.toThrow('PENDING_COMMANDS');
+    await repository.close(); await bob.close();
+  });
+
+  it.each(['old-marker', 'missing-cache', 'partial-cache', 'memory-fallback'] as const)('keeps %s history incomplete despite a working outbox', async (scenario) => {
+    const guard = ownerGuard();
+    const second = { ...revision, id: 'r2', aggregateId: 'bank', payload: { ...revision.payload as object, id: 'bank' } };
+    if (scenario !== 'old-marker') await guard.markHydrated(session, [revision, second]);
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    const persistenceReady = Promise.resolve(scenario === 'memory-fallback' ? { state: 'unavailable' as const, code: 'unimplemented' } : { state: 'persistent' as const });
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } }, persistenceReady });
+    await repository.exportPending();
+    let latest = { hydrated: true, durable: true, mode: 'synced' };
+    let complete = true;
+    let emissions = 0;
+    repository.subscribe((revisions, status) => { latest = status; complete = projectionToSnapshot(revisions, status, { asOf: '2026-10-18T12:00:00.000Z' }).complete; emissions += 1; });
+    const beforeReceive = emissions;
+    receive?.({ revisions: scenario === 'partial-cache' ? [revision] : [], fromCache: scenario !== 'memory-fallback', hasPendingWrites: false });
+    await vi.waitFor(() => expect(emissions).toBeGreaterThan(beforeReceive));
+    expect(latest.hydrated).toBe(false);
+    expect(complete).toBe(false);
+    if (scenario === 'memory-fallback') {
+      expect(latest.durable).toBe(false);
+      expect(latest.mode).toBe('error');
+      expect(await repository.append(revision)).toEqual({ revisionId: 'r1', state: 'local' });
+      expect(await repository.exportPending()).toEqual([revision]);
+    }
+    await repository.close();
+  });
+
+  it.each([{ history: [] as Revision[] }, { history: [revision] }])('verifies persisted coverage for truly empty and populated caches after restart: %j', async ({ history }) => {
+    const name = dbName();
+    const guard = await loadSessionOwnerGuard(session, name);
+    await guard.activate(session, true);
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    const transport: RevisionTransport = { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } };
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard, transport, persistenceReady: persistent });
+    await repository.exportPending();
+    let complete = false;
+    repository.subscribe((revisions, status) => { complete = projectionToSnapshot(revisions, status, { asOf: '2026-10-18T12:00:00.000Z' }).complete; });
+    receive?.({ revisions: history, fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(complete).toBe(true));
+    await repository.close();
+    const restored = await loadSessionOwnerGuard(session, name);
+    await restored.activate(session, false);
+    const restarted = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard: restored, transport, persistenceReady: persistent });
+    await restarted.exportPending();
+    complete = false;
+    restarted.subscribe((revisions, status) => { complete = projectionToSnapshot(revisions, status, { asOf: '2026-10-18T12:00:00.000Z' }).complete; });
+    receive?.({ revisions: history, fromCache: true, hasPendingWrites: false });
+    await vi.waitFor(() => expect(complete).toBe(true));
+    await restarted.close();
+  });
+
+  it('detects changed content under a cached ID and excludes server timestamps from integrity hashes', async () => {
+    const guard = ownerGuard();
+    await guard.markHydrated(session, [revision]);
+    expect(await guard.cacheMatches(session, [{ ...revision, receivedAtServer: '2026-10-18T12:00:00.000Z' }])).toBe(true);
+    expect(await guard.cacheMatches(session, [{ ...revision, payload: { ...revision.payload as object, name: 'Changed cached value' } }])).toBe(false);
+    const original = new SessionOwnerGuard({ ownerUid: 'alice', hydratedUid: 'alice' });
+    expect(original.isHydrated(session)).toBe(false);
+    await expect(original.activate(session, false)).rejects.toThrow('OFFLINE_UNAVAILABLE');
+  });
+
+  it('does not promote pending server overlays into the authoritative manifest', async () => {
+    const guard = ownerGuard();
+    await guard.markHydrated(session, [revision]);
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } }, persistenceReady: persistent });
+    const second = { ...revision, id: 'r2', aggregateId: 'bank', payload: { ...revision.payload as object, id: 'bank' } };
+    await repository.append(second);
+    let hydrated = false;
+    repository.subscribe((_revisions, status) => { hydrated = status.hydrated; });
+    receive?.({ revisions: [revision, second], fromCache: false, hasPendingWrites: true });
+    await vi.waitFor(() => expect(hydrated).toBe(true));
+    expect(await guard.cacheMatches(session, [revision])).toBe(true);
+    expect(await guard.cacheMatches(session, [revision, second])).toBe(false);
+    expect(await guard.cacheMatches(session, [revision, second], [second])).toBe(true);
+    await repository.close();
+  });
+
+  it('serializes asynchronous manifest writes so earlier events cannot overwrite newer history', async () => {
+    let writes = 0;
+    let release: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => { release = resolve; });
+    const guard = new SessionOwnerGuard({ ownerUid: 'alice', hydratedUid: null }, async () => { writes += 1; if (writes === 1) await firstWrite; });
+    let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard, transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } }, persistenceReady: persistent });
+    await repository.exportPending();
+    const second = { ...revision, id: 'r2', aggregateId: 'bank', payload: { ...revision.payload as object, id: 'bank' } };
+    let seen: Revision[] = [];
+    repository.subscribe((revisions) => { seen = revisions; });
+    receive?.({ revisions: [revision], fromCache: false, hasPendingWrites: false });
+    receive?.({ revisions: [revision, second], fromCache: false, hasPendingWrites: false });
+    await vi.waitFor(() => expect(writes).toBe(1));
+    release?.();
+    await vi.waitFor(() => expect(seen).toEqual([revision, second]));
+    expect(writes).toBe(2);
+    expect(await guard.cacheMatches(session, [revision, second])).toBe(true);
+    expect(await guard.cacheMatches(session, [revision])).toBe(false);
+    await repository.close();
+  });
   it('resolves append durably while the remote ACK is still pending', async () => {
     const box = new IndexedDbOutbox(session, dbName());
-    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: neverAck });
+    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: neverAck, persistenceReady: persistent });
     expect(await repository.append(revision)).toEqual({ revisionId: 'r1', state: 'local' });
     expect(await repository.exportPending()).toEqual([revision]);
     await repository.close();
@@ -52,7 +196,7 @@ describe('repository completion and session boundary', () => {
   it('retains server rejection for correction and removes only acknowledged commands', async () => {
     const box = new IndexedDbOutbox(session, dbName());
     let allow = false;
-    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: { ...neverAck, send: async () => { if (!allow) throw new Error('permission-denied'); } } });
+    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: { ...neverAck, send: async () => { if (!allow) throw new Error('permission-denied'); } }, persistenceReady: persistent });
     await repository.append(revision);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect((await box.list())[0]?.state).toBe('rejected');
@@ -66,7 +210,7 @@ describe('repository completion and session boundary', () => {
   it('refuses a corrupted nested installment before local save or financial hydration', async () => {
     const box = new IndexedDbOutbox(session, dbName());
     let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
-    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } } });
+    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } }, persistenceReady: persistent });
     const bad: Revision = { ...revision, kind: 'installmentPlan', payload: { id: 'cash', movementId: 'purchase', cardId: 'card', installments: [{ ordinal: 1, dueDate: '2026-10-15', amount: { currency: 'NIO', minor: 'bad' } }] } };
     await expect(repository.append(bad)).rejects.toThrow();
     expect(await repository.exportPending()).toEqual([]);
@@ -93,7 +237,7 @@ describe('repository completion and session boundary', () => {
   });
   it('applies the canonical financial validator before append and remote hydration', async () => {
     let receive: Parameters<RevisionTransport['subscribe']>[0] | undefined;
-    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard: ownerGuard(), transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } } });
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, dbName()), guard: ownerGuard(), transport: { ...neverAck, subscribe: (next) => { receive = next; return () => {}; } }, persistenceReady: persistent });
     const unbalanced: Revision = { ...revision, kind: 'movement', payload: { id: 'cash', date: '2026-10-15', kind: 'expense', postings: [{ accountId: 'cash', amount: { currency: 'NIO', minor: -99 } }, { accountId: 'sys-expense-NIO', amount: { currency: 'NIO', minor: 100 } }], flows: [{ kind: 'expense', categoryId: 'food', amount: { currency: 'NIO', minor: 100 } }] } };
     await expect(repository.append(unbalanced)).rejects.toMatchObject({ code: 'UNBALANCED' });
     expect(await repository.exportPending()).toEqual([]);
@@ -107,7 +251,7 @@ describe('repository completion and session boundary', () => {
 
   it('blocks logout with pending commands and never silently discards the outbox', async () => {
     const box = new IndexedDbOutbox(session, dbName());
-    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: neverAck });
+    const repository = new FirestoreRevisionRepository(session, { outbox: box, guard: ownerGuard(), transport: neverAck, persistenceReady: persistent });
     await repository.append(revision);
     await expect(closeSession({ repository, guard: ownerGuard(), clearPersistence: async () => {}, clearUserState: async () => {}, signOut: async () => {} })).rejects.toThrow('PENDING_COMMANDS');
     expect(await repository.exportPending()).toEqual([revision]);
@@ -117,11 +261,11 @@ describe('repository completion and session boundary', () => {
     const name = dbName();
     const guard = await loadSessionOwnerGuard(session, name);
     await guard.activate(session, true);
-    await guard.markHydrated(session);
+    await guard.markHydrated(session, []);
     const restored = await loadSessionOwnerGuard(session, name);
     expect(restored.isHydrated(session)).toBe(true);
     await expect(restored.activate({ uid: 'bob', emailVerified: true }, true)).rejects.toThrow('SESSION_CLEANUP_REQUIRED');
-    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard: restored, transport: neverAck });
+    const repository = new FirestoreRevisionRepository(session, { outbox: new IndexedDbOutbox(session, name), guard: restored, transport: neverAck, persistenceReady: persistent });
     await closeSession({ repository, guard: restored, clearUserState: async () => {}, clearPersistence: async () => {}, signOut: async () => {} });
     const next = await loadSessionOwnerGuard({ uid: 'bob', emailVerified: true }, name);
     await next.activate({ uid: 'bob', emailVerified: true }, true);

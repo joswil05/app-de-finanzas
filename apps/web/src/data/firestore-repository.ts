@@ -2,6 +2,7 @@ import { RevisionSchema, VerifiedSessionSchema, type Revision, type RevisionRepo
 import { collection, doc, getDocFromServer, onSnapshot, serverTimestamp, setDoc, Timestamp, type Firestore } from 'firebase/firestore';
 import { financialContent, IndexedDbOutbox, validateLocalRevision, type OutboxEntry } from './outbox';
 import { SessionOwnerGuard } from './session-cleanup';
+import type { PersistenceReadiness } from './firebase';
 
 export type RemoteRevisionBatch = { revisions: Revision[]; fromCache: boolean; hasPendingWrites: boolean };
 /** Injectable boundary for a slow external service; the production implementation is the modular SDK below. */
@@ -9,7 +10,7 @@ export interface RevisionTransport {
   send(revision: Revision): Promise<void>;
   subscribe(next: (batch: RemoteRevisionBatch) => void, error: (cause: unknown) => void): () => void;
 }
-export type RepositoryDependencies = { outbox: IndexedDbOutbox; guard: SessionOwnerGuard; transport: RevisionTransport; assertCurrentSession?: () => void };
+export type RepositoryDependencies = { outbox: IndexedDbOutbox; guard: SessionOwnerGuard; transport: RevisionTransport; persistenceReady: Promise<PersistenceReadiness>; assertCurrentSession?: () => void };
 class InvalidRemoteRevisionError extends Error {
   constructor(cause: unknown) { super('INVALID_REMOTE_REVISION: financial history requires review', { cause }); }
 }
@@ -64,6 +65,8 @@ export class FirestoreRevisionRepository implements RevisionRepository {
   private readonly confirmedIds = new Set<string>();
   private local: OutboxEntry[] = [];
   private remoteRejected = 0;
+  private persistence: PersistenceReadiness = { state: 'unavailable', code: 'PERSISTENCE_NOT_READY' };
+  private receiveQueue: Promise<void> = Promise.resolve();
   private status: SyncStatus;
   private closed = false;
   private stop: (() => void) | undefined;
@@ -82,9 +85,14 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     this.dependencies.assertCurrentSession?.();
   }
   private async initialize(): Promise<void> {
+    this.persistence = await this.dependencies.persistenceReady.catch(() => ({ state: 'unavailable' as const, code: 'PERSISTENCE_UNAVAILABLE' }));
     await this.refresh();
     this.assertActive();
-    this.stop = this.dependencies.transport.subscribe((batch) => { void this.receive(batch).catch(() => this.quarantineRemote()); }, (cause) => {
+    this.stop = this.dependencies.transport.subscribe((batch) => {
+      // Hashing and persisting manifests is asynchronous. Preserve listener event order;
+      // a slow earlier cache event must never overwrite a newer authoritative manifest.
+      this.receiveQueue = this.receiveQueue.then(() => this.receive(batch)).catch(() => this.quarantineRemote());
+    }, (cause) => {
       if (this.closed) return;
       if (cause instanceof InvalidRemoteRevisionError) this.quarantineRemote();
       else { this.status = { ...this.status, mode: 'error', hydrated: false }; this.emit(); }
@@ -93,12 +101,31 @@ export class FirestoreRevisionRepository implements RevisionRepository {
   }
   private async receive(batch: RemoteRevisionBatch): Promise<void> {
     this.assertActive();
-    this.remote = new Map(batch.revisions.map((revision) => [revision.id, validateLocalRevision(revision)]));
+    const next = new Map(batch.revisions.map((revision) => [revision.id, validateLocalRevision(revision)]));
+    this.local = await this.dependencies.outbox.list();
+    this.assertActive();
+    const authoritative = !batch.fromCache && !batch.hasPendingWrites;
+    if (authoritative) {
+      this.remote = next;
+      this.confirmedIds.clear();
+      for (const id of next.keys()) this.confirmedIds.add(id);
+    } else {
+      for (const [id, known] of this.remote) if (this.confirmedIds.has(id)) next.set(id, known);
+      this.remote = next;
+    }
     this.remoteRejected = 0;
-    if (!batch.fromCache && !batch.hasPendingWrites) for (const revision of batch.revisions) this.confirmedIds.add(revision.id);
-    if (!batch.fromCache) await this.dependencies.guard.markHydrated(this.session);
+    if (authoritative && this.persistence.state === 'persistent') await this.dependencies.guard.markHydrated(this.session, batch.revisions);
+    const cacheReady = this.persistence.state === 'persistent' && await this.dependencies.guard.cacheMatches(this.session, batch.revisions, this.local.filter((entry) => entry.state === 'pending').map((entry) => entry.revision));
+    if (cacheReady) {
+      const pendingIds = new Set(this.local.filter((entry) => entry.state === 'pending').map((entry) => entry.revisionId));
+      for (const id of next.keys()) if (!pendingIds.has(id)) this.confirmedIds.add(id);
+    }
+    for (const entry of this.local) {
+      const known = this.confirmedIds.has(entry.revisionId) ? this.remote.get(entry.revisionId) : undefined;
+      if (known && financialContent(known) !== financialContent(entry.revision)) await this.dependencies.outbox.reject(entry.revisionId, 'REVISION_ID_COLLISION');
+    }
     if (this.closed) return;
-    this.status = { ...this.status, hydrated: this.dependencies.guard.isHydrated(this.session), mode: batch.fromCache ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : (batch.hasPendingWrites ? 'syncing' : 'synced') };
+    this.status = { ...this.status, hydrated: cacheReady, mode: this.persistence.state !== 'persistent' || (batch.fromCache && !cacheReady) ? 'error' : batch.fromCache ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : (batch.hasPendingWrites ? 'syncing' : 'synced') };
     if (!batch.fromCache && !batch.hasPendingWrites) this.status.lastSyncedAt = new Date().toISOString();
     await this.refresh();
   }
@@ -115,7 +142,8 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     const localRejected = this.local.filter((entry) => entry.state === 'rejected').length;
     const rejected = localRejected + this.remoteRejected;
     const pending = this.local.length - localRejected;
-    this.status = { ...this.status, pending, rejected, durable: true, hydrated: this.remoteRejected ? false : this.status.hydrated, mode: rejected ? 'error' : pending ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : this.status.mode };
+    const durable = this.persistence.state === 'persistent';
+    this.status = { ...this.status, pending, rejected, durable, hydrated: !durable || this.remoteRejected ? false : this.status.hydrated, mode: !durable || rejected ? 'error' : pending ? (typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing') : this.status.mode };
     this.emit();
   }
   private emit(): void {
@@ -123,8 +151,10 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     try { this.assertActive(); } catch { return; }
     const revisions = new Map(this.remote);
     for (const entry of this.local) {
-      if (entry.state === 'rejected') revisions.delete(entry.revisionId);
-      else revisions.set(entry.revisionId, entry.revision);
+      if (entry.state === 'rejected') continue;
+      // A rejected or colliding command is recovery evidence, never authority over
+      // an immutable revision already confirmed by the server/cache manifest.
+      if (!this.confirmedIds.has(entry.revisionId)) revisions.set(entry.revisionId, entry.revision);
     }
     for (const listener of this.listeners) listener([...revisions.values()], { ...this.status });
   }
@@ -135,6 +165,12 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     void this.dependencies.transport.send(revision).then(async () => {
       if (this.closed) return;
       this.assertActive();
+      const known = this.confirmedIds.has(revision.id) ? this.remote.get(revision.id) : undefined;
+      if (known && financialContent(known) !== financialContent(revision)) {
+        await this.dependencies.outbox.reject(revision.id, 'REVISION_ID_COLLISION');
+        await this.refresh();
+        return;
+      }
       this.remote.set(revision.id, revision);
       this.confirmedIds.add(revision.id);
       await this.dependencies.outbox.acknowledge(revision.id);
@@ -175,9 +211,9 @@ export class FirestoreRevisionRepository implements RevisionRepository {
     await this.dependencies.outbox.reset(revisionId); await this.refresh(); this.dispatch(entry.revision);
   }
   async exportPending(): Promise<Revision[]> { this.assertActive(); await this.ready; return (await this.dependencies.outbox.list()).map((entry) => entry.revision); }
-  async close(): Promise<void> { this.closed = true; this.listeners.clear(); this.stop?.(); await this.ready.catch(() => {}); this.stop?.(); await this.dependencies.outbox.close(); }
+  async close(): Promise<void> { this.closed = true; this.listeners.clear(); this.stop?.(); await this.ready.catch(() => {}); this.stop?.(); await this.receiveQueue; await this.dependencies.outbox.close(); }
 }
 
-export function createRevisionRepository(session: VerifiedSession, dependencies: { firestore: Firestore; outbox: IndexedDbOutbox; guard: SessionOwnerGuard; assertCurrentSession: () => void }): RevisionRepository {
+export function createRevisionRepository(session: VerifiedSession, dependencies: { firestore: Firestore; outbox: IndexedDbOutbox; guard: SessionOwnerGuard; persistenceReady: Promise<PersistenceReadiness>; assertCurrentSession: () => void }): RevisionRepository {
   return new FirestoreRevisionRepository(session, { ...dependencies, transport: createFirestoreTransport(dependencies.firestore, session) });
 }

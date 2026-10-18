@@ -2,7 +2,8 @@ import { MovementSchema, RevisionSchema, VerifiedSessionSchema, type Revision, t
 import { validateMovement } from '@fin/domain';
 
 export type OutboxEntry = { uid: string; revisionId: string; revision: Revision; state: 'pending' | 'rejected'; error?: string };
-export type LocalSessionRecord = { ownerUid: string | null; hydratedUid: string | null };
+export type CacheManifest = { schemaVersion: 1; entries: Array<{ id: string; sha256: string }> };
+export type LocalSessionRecord = { ownerUid: string | null; hydratedUid: string | null; manifest?: CacheManifest };
 const canonical = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, canonical(child)]));
@@ -71,7 +72,9 @@ export class IndexedDbOutbox {
   }
   async list(): Promise<OutboxEntry[]> {
     return this.transaction<OutboxEntry[]>('commands', 'readonly', (store, result) => {
-      const request = store.getAll(IDBKeyRange.bound([this.uid, ''], [this.uid, '\uffff']));
+      // Every valid string is below an array in IndexedDB's key ordering; no finite
+      // string sentinel can cover all permitted revision IDs (for example U+FFFFx).
+      const request = store.getAll(IDBKeyRange.bound([this.uid], [this.uid, []], false, true));
       request.onsuccess = () => result(request.result as OutboxEntry[]);
     });
   }

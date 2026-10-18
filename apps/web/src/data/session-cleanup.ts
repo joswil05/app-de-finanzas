@@ -1,5 +1,20 @@
-import { VerifiedSessionSchema, type RevisionRepository, type VerifiedSession } from '@fin/contracts';
-import { IndexedDbOutbox, type LocalSessionRecord } from './outbox';
+import { IdSchema, VerifiedSessionSchema, type Revision, type RevisionRepository, type VerifiedSession } from '@fin/contracts';
+import { financialContent, IndexedDbOutbox, type CacheManifest, type LocalSessionRecord } from './outbox';
+
+async function cacheManifest(revisions: Revision[]): Promise<CacheManifest> {
+  const entries = await Promise.all(revisions.map(async (revision) => {
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(financialContent(revision)));
+    return { id: revision.id, sha256: Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('') };
+  }));
+  entries.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  if (new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new Error('INVALID_CACHE_MANIFEST');
+  return { schemaVersion: 1, entries };
+}
+function validManifest(value: CacheManifest | undefined): value is CacheManifest {
+  return value?.schemaVersion === 1 && Array.isArray(value.entries)
+    && value.entries.every((entry) => entry && IdSchema.safeParse(entry.id).success && typeof entry.sha256 === 'string' && /^[a-f0-9]{64}$/u.test(entry.sha256))
+    && new Set(value.entries.map((entry) => entry.id)).size === value.entries.length;
+}
 
 /** Metadata uses short independent connections so repository shutdown cannot prevent owner cleanup. */
 export async function loadSessionOwnerGuard(session: VerifiedSession, databaseName = 'finanzas-local-v1'): Promise<SessionOwnerGuard> {
@@ -23,13 +38,30 @@ export class SessionOwnerGuard {
   async activate(session: VerifiedSession, online: boolean): Promise<void> {
     VerifiedSessionSchema.parse(session);
     if (this.record.ownerUid !== null && this.record.ownerUid !== session.uid) throw new Error('SESSION_CLEANUP_REQUIRED');
-    if (!online && (this.record.ownerUid !== session.uid || this.record.hydratedUid !== session.uid)) throw new Error('OFFLINE_UNAVAILABLE: first access requires connection');
+    if (!online && (this.record.ownerUid !== session.uid || this.record.hydratedUid !== session.uid || !validManifest(this.record.manifest))) throw new Error('OFFLINE_UNAVAILABLE: verified history manifest requires connection');
     const next = { ...this.record, ownerUid: session.uid };
     await this.persist(next);
     this.record = next;
   }
-  isHydrated(session: VerifiedSession): boolean { this.assert(session); return this.record.hydratedUid === session.uid; }
-  async markHydrated(session: VerifiedSession): Promise<void> { this.assert(session); const next = { ...this.record, hydratedUid: session.uid }; await this.persist(next); this.record = next; }
+  isHydrated(session: VerifiedSession): boolean { this.assert(session); return this.record.hydratedUid === session.uid && validManifest(this.record.manifest); }
+  async markHydrated(session: VerifiedSession, revisions: Revision[]): Promise<void> {
+    this.assert(session);
+    const manifest = await cacheManifest(revisions);
+    this.assert(session);
+    const next = { ...this.record, hydratedUid: session.uid, manifest };
+    await this.persist(next); this.record = next;
+  }
+  async cacheMatches(session: VerifiedSession, revisions: Revision[], allowedPending: Revision[] = []): Promise<boolean> {
+    this.assert(session);
+    if (!this.isHydrated(session) || !validManifest(this.record.manifest)) return false;
+    const actual = new Map((await cacheManifest(revisions)).entries.map((entry) => [entry.id, entry.sha256]));
+    const expected = new Map(this.record.manifest.entries.map((entry) => [entry.id, entry.sha256]));
+    const pending = new Map((await cacheManifest(allowedPending)).entries.map((entry) => [entry.id, entry.sha256]));
+    for (const [id, digest] of expected) if (actual.get(id) !== digest) return false;
+    for (const [id, digest] of actual) if (!expected.has(id) && pending.get(id) !== digest) return false;
+    this.assert(session);
+    return true;
+  }
   async clear(): Promise<void> { const next = { ownerUid: null, hydratedUid: null }; await this.persist(next); this.record = next; }
 }
 
