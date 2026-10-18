@@ -9,10 +9,12 @@ import { AUTO_LOCK_MS, deviceIdentity, LocalPinLock } from '../security/local-lo
 import { authError } from './errors';
 
 export type SessionView = { ready: boolean; user: User | null; profile: UserProfile | null; locked: boolean; error: string | null; blocked: boolean; persistence: 'checking' | 'persistent' | 'unavailable' };
+export type SessionAuthorization = Readonly<{ uid: string; generation: number }>;
 export class SessionController {
   private view: SessionView = { ready: false, user: null, profile: null, locked: false, error: null, blocked: false, persistence: 'checking' };
   private listeners = new Set<() => void>();
   private generation = 0;
+  private accessPending = false;
   private pin: LocalPinLock | null = null;
   private owner: SessionOwnerGuard | null = null;
   private outbox: IndexedDbOutbox | null = null;
@@ -39,7 +41,7 @@ export class SessionController {
         await this.repository?.close(); this.repository = null;
       }
     });
-    this.stopAuth = onIdTokenChanged(this.runtime.auth, (user) => { void this.acceptIdentity(user); }, (cause) => this.update({ ready: true, user: null, profile: null, blocked: true, error: authError(cause) }));
+    this.stopAuth = onIdTokenChanged(this.runtime.auth, (user) => { void this.acceptIdentity(user); }, (cause) => { this.generation++; this.accessPending = false; this.update({ ready: true, user: null, profile: null, blocked: true, error: authError(cause) }); });
     if (typeof BroadcastChannel !== 'undefined') this.coordinator = new SessionTabCoordinator(async () => {
       this.closing = true; this.generation++; this.update({ user: null, profile: null, ready: true, blocked: true, error: 'Se cerró la sesión en otra pestaña. Recargá para continuar.' });
       await this.repository?.close(); this.repository = null;
@@ -55,9 +57,10 @@ export class SessionController {
   }
   private async acceptIdentity(user: User | null) {
     if (this.closing || this.view.blocked) return;
-    const generation = ++this.generation;
     const same = user?.uid === this.view.user?.uid;
-    if (same && user && this.view.profile) { this.update({ user }); return; }
+    // A token refresh keeps the current UID/lock authorization and its pending read.
+    if (same && user?.emailVerified && (this.view.profile || this.pin)) { this.update({ user }); return; }
+    const generation = ++this.generation;
     this.update({ ready: false, user: null, profile: null, error: null });
     try {
       if (!user) { this.pin = null; this.update({ ready: true, user: null, locked: false }); return; }
@@ -75,16 +78,28 @@ export class SessionController {
       if (!this.pin.configured) await this.openOwner(user, generation);
     } catch (cause) { if (generation === this.generation) this.update({ ready: true, blocked: true, profile: null, error: authError(cause) }); }
   }
-  private async openOwner(user: User, generation = this.generation) {
+  private isCurrent(user: User, generation: number): boolean { return generation === this.generation && !this.closing && this.runtime.auth.currentUser?.uid === user.uid; }
+  captureAccess = (): SessionAuthorization => {
+    const user = this.runtime.auth.currentUser;
+    if (!user || !this.view.ready || this.view.locked || this.view.blocked || this.view.user?.uid !== user.uid) throw new Error('Desbloqueá tu espacio para continuar.');
+    return { uid: user.uid, generation: this.generation };
+  };
+  private async openOwner(user: User, generation: number) {
+    if (!this.isCurrent(user, generation)) return;
+    this.accessPending = true;
     this.update({ ready: false });
+    try {
     const persistence = await this.runtime.persistenceReady;
+    if (!this.isCurrent(user, generation)) return;
     this.update({ persistence: persistence.state === 'persistent' ? 'persistent' : 'unavailable' });
     if (persistence.state !== 'persistent' && !navigator.onLine) throw new Error('Este navegador no pudo conservar el historial. Necesitás conexión para continuar.');
     const session: VerifiedSession = { uid: user.uid, emailVerified: true };
     this.runtime.assertSession(session);
     if (!this.outbox) this.outbox = new IndexedDbOutbox(session);
     if (!this.owner) this.owner = await loadSessionOwnerGuard(session);
+    if (!this.isCurrent(user, generation)) return;
     await this.owner.activate(session, navigator.onLine);
+    if (!this.isCurrent(user, generation)) return;
     const profileRef = doc(this.runtime.firestore, 'users', session.uid);
     let profile: UserProfile;
     const existing = await getDoc(profileRef);
@@ -98,11 +113,21 @@ export class SessionController {
         transaction.set(profileRef, initial); return initial;
       });
     }
-    if (generation !== this.generation || this.runtime.auth.currentUser?.uid !== session.uid) return;
+    if (!this.isCurrent(user, generation)) return;
     if (profile.uid !== session.uid) throw new Error('El perfil no corresponde a esta cuenta.');
     if (!this.repository) this.repository = createRevisionRepository(session, { firestore: this.runtime.firestore, persistenceReady: this.runtime.persistenceReady, outbox: this.outbox, guard: this.owner, assertCurrentSession: () => this.runtime.assertSession(session) });
     this.lastActivity = Date.now();
     this.update({ ready: true, user, profile, locked: false, error: null });
+    } catch (cause) {
+      if (!this.isCurrent(user, generation)) return;
+      this.update({ ready: true, blocked: true, locked: this.pin?.configured ?? false, profile: null, error: authError(cause) });
+      throw cause;
+    } finally {
+      if (generation === this.generation && !this.closing) {
+        this.accessPending = false;
+        if (!this.view.ready) this.update({ ready: true, blocked: true, profile: null, error: 'La sesión cambió durante el acceso. Volvé a entrar con la cuenta anterior.' });
+      }
+    }
   }
   login = async (email: string, password: string) => { await signInWithEmailAndPassword(this.runtime.auth, email, password); };
   register = async (email: string, password: string) => { const result = await createUserWithEmailAndPassword(this.runtime.auth, email, password); await sendEmailVerification(result.user); };
@@ -114,15 +139,19 @@ export class SessionController {
     if (!user.emailVerified) throw new Error('Tu correo todavía no está verificado. Revisá tu bandeja de entrada.');
     await this.acceptIdentity(user);
   };
-  lock = () => { if (this.pin?.configured && this.view.user && !this.view.locked) { this.generation++; this.update({ locked: true }); } };
+  lock = () => { if (this.pin?.configured && this.view.user && (!this.view.locked || this.accessPending)) { this.generation++; this.accessPending = false; this.update({ ready: true, locked: true }); } };
   unlock = async (pin: string) => {
     const user = this.runtime.auth.currentUser; const lock = this.pin;
     if (!user || !lock) throw new Error('Volvé a entrar.');
     const generation = this.generation;
+    this.accessPending = true;
+    try {
     const result = await lock.verify(pin);
+    if (!this.isCurrent(user, generation)) return;
     if (!result.ok) throw new Error(result.retryAfterMs > 0 ? `Esperá ${Math.ceil(result.retryAfterMs / 1000)} segundos antes de intentar otra vez.` : 'El PIN no coincide. Intentá de nuevo.');
     if (generation !== this.generation || user.uid !== this.view.user?.uid) return;
     await this.openOwner(user, generation);
+    } finally { if (generation === this.generation) this.accessPending = false; }
   };
   getPinWait = () => { try { return this.pin?.retryAfterMs ?? 0; } catch { return 0; } };
   get hasPin(): boolean { return this.pin?.configured ?? false; }
@@ -130,16 +159,25 @@ export class SessionController {
   resetPin = async (pin: string, password?: string) => {
     if (!navigator.onLine) throw new Error('Necesitás conexión para recuperar el PIN.');
     const user = this.runtime.auth.currentUser; if (!user || !this.pin) throw new Error('Volvé a entrar.');
+    const generation = this.generation;
+    this.accessPending = true;
+    try {
     if (user.providerData.some((provider) => provider.providerId === 'password')) {
       if (!user.email || !password) throw new Error('Ingresá la contraseña de tu cuenta.');
       await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password));
     } else await reauthenticateWithPopup(user, new GoogleAuthProvider());
     if (this.runtime.auth.currentUser?.uid !== user.uid) throw new Error('La sesión cambió. Volvé a entrar.');
-    await this.pin.setPin(pin); await this.openOwner(user);
+    if (!this.isCurrent(user, generation)) return;
+    await this.pin.setPin(pin); await this.openOwner(user, generation);
+    } finally { if (generation === this.generation) this.accessPending = false; }
   };
   linkGoogle = async (password: string) => { const user = this.runtime.auth.currentUser; if (!user?.email) throw new Error('Volvé a entrar.'); await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, password)); await linkWithPopup(user, new GoogleAuthProvider()); };
   linkPassword = async (password: string) => { const user = this.runtime.auth.currentUser; if (!user?.email) throw new Error('Falta un correo verificado.'); await reauthenticateWithPopup(user, new GoogleAuthProvider()); await linkWithCredential(user, EmailAuthProvider.credential(user.email, password)); };
-  completeSetup = async () => { const user = this.runtime.auth.currentUser; if (user) await this.openOwner(user); };
+  completeSetup = async (authorization: SessionAuthorization) => {
+    const user = this.runtime.auth.currentUser;
+    if (!authorization || !user || authorization.uid !== user.uid || !this.isCurrent(user, authorization.generation) || this.view.locked || this.view.blocked) return;
+    await this.openOwner(user, authorization.generation);
+  };
   recoverAccess = async () => {
     // This does not authorize another UID or discard the previous owner's data.
     this.closing = true; this.generation++; this.update({ ready: false, profile: null, locked: true });

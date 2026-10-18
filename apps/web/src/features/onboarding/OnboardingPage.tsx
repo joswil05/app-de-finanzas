@@ -22,7 +22,7 @@ export function OnboardingPage({ controller }: { controller: SessionController }
     }
     const data = new FormData(event.currentTarget);
     if (!controller.hasPin && data.get('pin') !== data.get('confirmPin')) { setError('Los PIN no coinciden.'); return; }
-    setBusy(true); try { if (!controller.hasPin) await controller.setInitialPin(String(data.get('pin'))); await finishSetup(controller, draft); } catch (cause) { setError(authError(cause)); } finally { setBusy(false); }
+    setBusy(true); try { const authorization = controller.captureAccess(); if (!controller.hasPin) await controller.setInitialPin(String(data.get('pin'))); await finishSetup(controller, draft, authorization); } catch (cause) { setError(authError(cause)); } finally { setBusy(false); }
   }
   return <AccessFrame title={draft.step === 1 ? 'Hagamos espacio para vos' : draft.step === 2 ? 'Tu primera cuenta' : 'Protegé la vista'} intro={draft.step === 1 ? 'C$ son córdobas y US$ son dólares. Tus registros mantienen su moneda.' : draft.step === 2 ? 'Anotá lo que tenés hoy. Este saldo inicial no cuenta como ingreso.' : 'Un PIN de 6 dígitos oculta tus datos en este dispositivo.'}>
     <p className={styles.step}>Paso {draft.step} de 3</p><form className={styles.form} onSubmit={(event) => void submit(event)}>
