@@ -1,0 +1,42 @@
+:root {
+  --color-background: #f6f8fb;
+  --color-surface: #fff;
+  --color-text: #182538;
+  --color-muted: #526277;
+  --color-action: #2457c5;
+  --color-action-hover: #1d469f;
+  --color-error: #b42318;
+  --color-success: #176447;
+  --color-border: #dce3ec;
+  --color-input-border: #9baabb;
+  --color-selected: #eaf0fd;
+  --color-error-surface: #fff3f1;
+  --color-success-surface: #edf8f2;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-small: 8px;
+  --radius-medium: 12px;
+  --radius-large: 16px;
+  --text-caption: .75rem;
+  --text-small: .875rem;
+  --text-body: 1rem;
+  --text-heading: 1.25rem;
+  --text-title: 1.5rem;
+  --text-display: 2rem;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: var(--color-text);
+  background: var(--color-background);
+  font-synthesis: none;
+  line-height: 1.5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select, textarea { font: inherit; }
+button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 3px solid var(--color-action); outline-offset: 3px; }
+button { touch-action: manipulation; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

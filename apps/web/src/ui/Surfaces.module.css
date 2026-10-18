@@ -1,0 +1,19 @@
+.empty { padding: var(--space-8) 0; max-width: 60ch; }
+.empty h2, .result h3 { margin: 0 0 var(--space-2); font-size: var(--text-heading); line-height: 1.4; overflow-wrap: anywhere; }
+.icon { display: inline-flex; color: var(--color-muted); margin-bottom: var(--space-4); }
+.description, .source { color: var(--color-muted); overflow-wrap: anywhere; }
+.empty .description { margin: 0 0 var(--space-6); }
+.result { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-4); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-medium); }
+.result h3, .result p { margin: 0; }
+.values { display: grid; gap: var(--space-3); margin: var(--space-2) 0; }
+.values > div { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); justify-content: space-between; }
+.values dt { color: var(--color-muted); overflow-wrap: anywhere; }
+.values dd { font-weight: 600; font-size: var(--text-heading); margin: 0 0 0 auto; max-width: 100%; }
+.source { font-size: var(--text-small); }
+.explanation { max-width: 70ch; overflow-wrap: anywhere; }
+.progress { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); min-width: 0; }
+.progressLabel { font-weight: 600; overflow-wrap: anywhere; }
+.progressText { margin-left: auto; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.track { width: 100%; height: 8px; background: var(--color-border); border-radius: var(--radius-small); overflow: hidden; }
+.fill { display: block; height: 100%; background: var(--color-action); }
+.excess { flex-basis: 100%; margin: 0; color: var(--color-error); font-size: var(--text-small); overflow-wrap: anywhere; }

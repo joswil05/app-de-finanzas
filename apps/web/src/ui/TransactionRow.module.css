@@ -1,0 +1,13 @@
+.row { border-bottom: 1px solid var(--color-border); min-width: 0; }
+.content { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); width: 100%; padding: var(--space-4) 0; border: 0; background: transparent; color: var(--color-text); font: inherit; text-align: left; }
+button.content { cursor: pointer; min-height: 44px; border-radius: var(--radius-small); }
+@media (hover: hover) { button.content:hover { background: var(--color-background); } }
+.identity { display: flex; align-items: flex-start; flex: 1 1 160px; gap: var(--space-3); min-width: 0; }
+.identity > svg { flex-shrink: 0; margin-top: var(--space-1); }
+.identity > span { min-width: 0; }
+.title { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.meta { display: block; font-size: var(--text-small); color: var(--color-muted); overflow-wrap: anywhere; }
+.figures { display: grid; gap: var(--space-1); text-align: right; margin-left: auto; min-width: 0; max-width: 100%; font-weight: 600; }
+.received { font-size: var(--text-small); font-weight: 400; }
+.chevron { flex-shrink: 0; color: var(--color-muted); }
+.status { padding-bottom: var(--space-3); }
