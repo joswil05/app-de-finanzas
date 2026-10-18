@@ -11,6 +11,14 @@ export default defineConfig({
   webServer: {
     command: 'npm run build --workspace @fin/web && npm run preview --workspace @fin/web -- --host 127.0.0.1 --port 4173 --strictPort',
     url: 'http://127.0.0.1:4173', reuseExistingServer: false,
-    env: { VITE_USE_FIREBASE_EMULATORS: 'true', VITE_FIREBASE_PROJECT_ID: 'demo-finanzas' }
+    env: {
+      VITE_USE_FIREBASE_EMULATORS: 'true',
+      VITE_FIREBASE_PROJECT_ID: 'demo-finanzas-tests',
+      VITE_FIREBASE_API_KEY: 'demo-public-api-key',
+      VITE_FIREBASE_AUTH_DOMAIN: 'demo-finanzas-tests.firebaseapp.com',
+      VITE_FIREBASE_APP_ID: '1:000000000000:web:demo',
+      VITE_FIREBASE_AUTH_EMULATOR_PORT: '9109',
+      VITE_FIREBASE_FIRESTORE_EMULATOR_PORT: '8180'
+    }
   }
 });

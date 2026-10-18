@@ -1,0 +1,112 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owner(uid) { return request.auth != null && request.auth.uid == uid && request.auth.token.email_verified == true; }
+    function verified() { return request.auth != null && request.auth.token.email_verified == true; }
+    function id(v) { return v is string && v.size() <= 128 && v.matches('^[^/\\\\\\x00-\\x20\\x7F]([^/\\\\\\x00-\\x1F\\x7F]*[^/\\\\\\x00-\\x20\\x7F])?$') && v != '.' && v != '..'; }
+    function text(v, n) { return v is string && v.size() <= n; }
+    function date(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function iso(v) { return v is string && v.size() <= 35 && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*Z$'); }
+    function currency(v) { return v == 'NIO' || v == 'USD'; }
+    function minor(v) { return v is int && v >= -9000000000000 && v <= 9000000000000; }
+    function money(v) { return v is map && v.keys().hasOnly(['currency', 'minor']) && currency(v.currency) && minor(v.minor); }
+    function positive(v) { return money(v) && v.minor >= 0; }
+    function optionalId(p, k) { return !(k in p) || id(p[k]); }
+    function optionalDate(p, k) { return !(k in p) || date(p[k]); }
+    function boundedIds(xs, maximum) {
+      let joined = xs.join('/');
+      // The split count excludes slash injection; string blocks below reject join's coercions.
+      return xs is list && xs.size() <= maximum && (xs.size()==0 ? true :
+        joined.split('/').size()==xs.size() && !xs.hasAny(['.','..'])
+        && joined.matches('^[^/\\\\\\x00-\\x20\\x7F]([^/\\\\\\x00-\\x1F\\x7F]{0,126}[^/\\\\\\x00-\\x20\\x7F])?(/[^/\\\\\\x00-\\x20\\x7F]([^/\\\\\\x00-\\x1F\\x7F]{0,126}[^/\\\\\\x00-\\x20\\x7F])?)*$'));
+    }
+    function stringAt(xs,i) { return xs.size()<=i ? true : xs[i] is string; }
+    function strings20(xs,start) { return xs.size()<=start ? true : stringAt(xs,start+0) && stringAt(xs,start+1) && stringAt(xs,start+2) && stringAt(xs,start+3) && stringAt(xs,start+4) && stringAt(xs,start+5) && stringAt(xs,start+6) && stringAt(xs,start+7) && stringAt(xs,start+8) && stringAt(xs,start+9) && stringAt(xs,start+10) && stringAt(xs,start+11) && stringAt(xs,start+12) && stringAt(xs,start+13) && stringAt(xs,start+14) && stringAt(xs,start+15) && stringAt(xs,start+16) && stringAt(xs,start+17) && stringAt(xs,start+18) && stringAt(xs,start+19); }
+    function ids(xs) { return xs is list && (xs.size()==0 ? true : boundedIds(xs,20) && strings20(xs,0)); }
+    function deviceIds(xs) { return boundedIds(xs,100) && strings20(xs,0) && strings20(xs,20) && strings20(xs,40) && strings20(xs,60) && strings20(xs,80); }
+    function rate(p) {
+      return p is map && p.keys().hasOnly(['nioPerUsd','effectiveDate','fetchedAt','source'])
+        && text(p.nioPerUsd, 32) && p.nioPerUsd.matches('^[0-9]+([.][0-9]{1,8})?$')
+        && p.nioPerUsd.matches('.*[1-9].*') && date(p.effectiveDate) && iso(p.fetchedAt) && p.source in ['BCN','manual'];
+    }
+    function account(p) {
+      return p.keys().hasOnly(['id','name','kind','currency','archived']) && id(p.id) && text(p.name,200) && p.name.size()>0
+        && p.kind in ['cash','bank','card','loanReceivable','loanPayable','investment','system'] && currency(p.currency) && p.archived is bool;
+    }
+    function posting(p) {
+      let a = p.amount;
+      return p.keys().hasOnly(['accountId','amount']) && p.accountId is string && p.accountId.size() <= 128
+        && a.keys().hasOnly(['currency','minor']) && a.currency in ['NIO','USD'] && a.minor is int;
+    }
+    function flow(p) { return p is map && p.keys().hasOnly(['kind','amount','categoryId']) && p.kind in ['income','expense'] && money(p.amount) && id(p.categoryId); }
+    function postAt(xs,i) { return xs.size() <= i ? true : posting(xs[i]); }
+    function flowAt(xs,i) { return xs.size() <= i ? true : flow(xs[i]); }
+    function movement(p) {
+      return p.keys().hasOnly(['id','date','kind','postings','flows','note','fx','linkedId','occurrenceId','draftId']) && id(p.id) && date(p.date)
+        && p.kind in ['income','expense','transfer','opening','adjustment','cardPurchase','cardPayment','refund','loanPrincipal','interest','investmentTransfer','investmentYield']
+        && p.postings is list && p.postings.size() >= 2 && p.postings.size() <= 8
+        && posting(p.postings[0]) && posting(p.postings[1]) && postAt(p.postings,2) && postAt(p.postings,3)
+        && postAt(p.postings,4) && postAt(p.postings,5) && postAt(p.postings,6) && postAt(p.postings,7)
+        && p.flows is list && p.flows.size() <= 4 && (p.flows.size()==0 ? true : flowAt(p.flows,0) && flowAt(p.flows,1) && flowAt(p.flows,2) && flowAt(p.flows,3))
+        && (!('note' in p) || text(p.note,2000)) && (!('fx' in p) || rate(p.fx))
+        && optionalId(p,'linkedId') && optionalId(p,'occurrenceId') && optionalId(p,'draftId')
+        // Full 3..8 posting balances are validated by the single domain engine; full schema is checked here.
+        && (p.postings.size()==2 ? (p.postings[0].amount.currency==p.postings[1].amount.currency && p.postings[0].amount.minor+p.postings[1].amount.minor==0) : true);
+    }
+    function budget(p) { return p.keys().hasOnly(['id','categoryId','currency','limitMinor','startsMonth','carryPositive']) && id(p.id) && id(p.categoryId) && currency(p.currency) && minor(p.limitMinor) && p.limitMinor >= 0 && p.startsMonth is string && p.startsMonth.matches('^[0-9]{4}-[0-9]{2}$') && p.carryPositive is bool; }
+    function goal(p) { return p.keys().hasOnly(['id','name','target','dueDate']) && id(p.id) && text(p.name,200) && positive(p.target) && optionalDate(p,'dueDate'); }
+    function allocation(p) { return p.keys().hasOnly(['id','goalId','accountId','amount']) && id(p.id) && id(p.goalId) && id(p.accountId) && positive(p.amount); }
+    function loan(p) { return p.keys().hasOnly(['id','direction','principal','counterparty','accountId','openedAt','dueDate','initialMode','archived']) && id(p.id) && p.direction in ['payable','receivable'] && positive(p.principal) && text(p.counterparty,200) && id(p.accountId) && date(p.openedAt) && optionalDate(p,'dueDate') && p.initialMode in ['existing','new'] && p.archived is bool; }
+    function investment(p) { return p.keys().hasOnly(['id','name','currency','accountId','initialValue','initialDate','archived']) && id(p.id) && text(p.name,200) && currency(p.currency) && id(p.accountId) && positive(p.initialValue) && p.initialValue.currency == p.currency && date(p.initialDate) && p.archived is bool; }
+    function valuation(p) { return p.keys().hasOnly(['id','investmentId','date','value']) && id(p.id) && id(p.investmentId) && date(p.date) && positive(p.value); }
+    function category(p) { return p.keys().hasOnly(['id','name','flowKind','icon','color','archived']) && id(p.id) && text(p.name,200) && p.name.size()>0 && p.flowKind in ['income','expense'] && (!('icon' in p) || text(p.icon,80)) && (!('color' in p) || (p.color is string && p.color.matches('^#[0-9a-fA-F]{6}$'))) && p.archived is bool; }
+    function intent(p) {
+      return p is map && p.keys().hasOnly(['kind','amount','date','accountId','categoryId','destinationAccountId','receivedAmount','note'])
+        && (!('kind' in p) || p.kind in ['income','expense','transfer']) && (!('amount' in p) || positive(p.amount))
+        && optionalDate(p,'date') && optionalId(p,'accountId') && optionalId(p,'categoryId') && optionalId(p,'destinationAccountId')
+        && (!('receivedAmount' in p) || positive(p.receivedAmount)) && (!('note' in p) || text(p.note,2000));
+    }
+    function favorite(p) { return p.keys().hasOnly(['id','name','template']) && id(p.id) && text(p.name,200) && intent(p.template); }
+    function reminderDay(xs,i) { return xs.size()<=i || (xs[i] is int && xs[i]>=0 && xs[i]<=365); }
+    function recurring(p) { return p.keys().hasOnly(['id','start','end','frequency','template','paused','reminderDaysBefore']) && id(p.id) && date(p.start) && optionalDate(p,'end') && p.frequency in ['daily','weekly','monthly','yearly'] && intent(p.template) && p.paused is bool && p.reminderDaysBefore is list && p.reminderDaysBefore.size() <= 5 && reminderDay(p.reminderDaysBefore,0) && reminderDay(p.reminderDaysBefore,1) && reminderDay(p.reminderDaysBefore,2) && reminderDay(p.reminderDaysBefore,3) && reminderDay(p.reminderDaysBefore,4); }
+    function override(p) { return p.keys().hasOnly(['id','occurrenceId','action','postponedTo','movementId']) && id(p.id) && id(p.occurrenceId) && p.action in ['skip','postpone','confirm'] && optionalDate(p,'postponedTo') && optionalId(p,'movementId') && (p.action!='postpone' || 'postponedTo' in p) && (p.action!='confirm' || 'movementId' in p); }
+    function terms(p) { return p is map && p.keys().hasOnly(['closingDay','dueDay']) && p.closingDay is int && p.closingDay>=1 && p.closingDay<=31 && p.dueDay is int && p.dueDay>=1 && p.dueDay<=31; }
+    function cardLimit(p) { return p is map && ((p.keys().hasOnly(['mode','amount']) && p.mode=='shared' && positive(p.amount)) || (p.keys().hasOnly(['mode','amounts']) && p.mode=='separate' && p.amounts is list && p.amounts.size()>=1 && p.amounts.size()<=2 && positive(p.amounts[0]) && (p.amounts.size()<2 || (positive(p.amounts[1]) && p.amounts[0].currency!=p.amounts[1].currency)))); }
+    function card(p) { return p.keys().hasOnly(['id','name','accountIds','terms','limit']) && id(p.id) && text(p.name,200) && ids(p.accountIds) && p.accountIds.size()>=1 && p.accountIds.size()<=2 && terms(p.terms) && cardLimit(p.limit); }
+    // Fully checking 60 nested installments exceeds Firebase's 1000-expression limit.
+    // The complete payload is revalidated by RevisionSchema before append and on every read.
+    // Keep the immutable envelope, own UID and outer shape bounded here; do not claim full server business validation.
+    function plan(p) { return p.keys().hasOnly(['id','movementId','cardId','installments']) && id(p.id) && id(p.movementId) && id(p.cardId) && p.installments is list && p.installments.size()>=1 && p.installments.size()<=60; }
+    function settings(p) { return p.keys().hasOnly(['summaryCurrency','timezone','locale','fxMode','manualRate','hidePushAmounts','notificationsEnabled','assistantConsent']) && currency(p.summaryCurrency) && text(p.timezone,100) && p.timezone.size()>0 && p.locale=='es-NI' && p.fxMode in ['automatic','manual'] && (!('manualRate' in p) || rate(p.manualRate)) && p.hidePushAmounts is bool && p.notificationsEnabled is bool && p.assistantConsent is bool; }
+    function payload(k,p,a) {
+      return p == null || (p is map && (k=='settings' || p.id==a) && (
+        k=='account' ? account(p) : k=='movement' ? movement(p) : k=='budget' ? budget(p)
+        : k=='goal' ? goal(p) : k=='allocation' ? allocation(p) : k=='loan' ? loan(p)
+        : k=='investment' ? investment(p) : k=='valuation' ? valuation(p) : k=='category' ? category(p)
+        : k=='favorite' ? favorite(p) : k=='recurring' ? recurring(p) : k=='occurrenceOverride' ? override(p)
+        : k=='card' ? card(p) : k=='installmentPlan' ? plan(p) : k=='settings' ? settings(p) : false));
+    }
+    function revision(p,r) {
+      return p.keys().hasOnly(['schemaVersion','id','aggregateId','kind','parentIds','payload','deviceId','createdAtClient','receivedAtServer'])
+        && p.schemaVersion==1 && id(p.id) && p.id==r && id(p.aggregateId) && id(p.deviceId)
+        && p.kind in ['account','movement','budget','goal','allocation','loan','investment','valuation','recurring','occurrenceOverride','card','installmentPlan','category','favorite','settings']
+        && ids(p.parentIds) && p.parentIds.toSet().size()==p.parentIds.size() && !(p.id in p.parentIds) && iso(p.createdAtClient) && p.receivedAtServer==request.time && payload(p.kind,p.payload,p.aggregateId);
+    }
+    match /users/{uid} {
+      allow read: if owner(uid);
+      allow create, update: if owner(uid) && request.resource.data.keys().hasOnly(['uid','displayName','setupComplete']) && request.resource.data.uid==uid && request.resource.data.setupComplete is bool && (!('displayName' in request.resource.data) || text(request.resource.data.displayName,200));
+      allow delete: if false;
+      match /revisions/{revisionId} { allow read: if owner(uid); allow create: if owner(uid) && revision(request.resource.data,revisionId); allow update, delete: if false; }
+      match /devices/{deviceId} {
+        allow read, delete: if owner(uid);
+        allow create, update: if owner(uid) && id(deviceId) && request.resource.data.keys().hasOnly(['token','consent','updatedAt']) && text(request.resource.data.token,4096) && request.resource.data.consent is bool && request.resource.data.updatedAt==request.time;
+      }
+      match /reminders/{occurrenceId} {
+        allow read, delete: if owner(uid);
+        allow create, update: if owner(uid) && request.resource.data.keys().hasOnly(['id','occurrenceId','uid','dueAt','state','deviceIds']) && request.resource.data.id==occurrenceId && id(occurrenceId) && id(request.resource.data.occurrenceId) && request.resource.data.uid==uid && iso(request.resource.data.dueAt) && request.resource.data.state in ['pending','cancelled'] && deviceIds(request.resource.data.deviceIds);
+      }
+    }
+    match /fxRates/{dateId} { allow read: if verified(); allow write: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
