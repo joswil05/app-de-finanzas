@@ -181,11 +181,11 @@ describe('canonical snapshot adapter', () => {
   test('recurrence clamps month end without losing requested day, suppresses confirmed occurrences', () => {
     const rule = r('rule-r', [], { id: 'rule', start: '2026-01-31', frequency: 'monthly', paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
     const snapshot = projectionToSnapshot([...base, rule], { ...status, lastSyncedAt: '2026-02-01T00:00:00Z' });
-    expect(snapshot.commitments.map((c) => c.dueDate)).toEqual(['2026-02-28', '2026-03-31', '2026-04-30']);
-    expect(snapshot.commitments.map((c) => c.id)).toEqual(['rule:2026-02-28:1', 'rule:2026-03-31:2', 'rule:2026-04-30:3']);
+    expect(snapshot.commitments.map((c) => c.dueDate)).toEqual(['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30']);
+    expect(snapshot.commitments.map((c) => c.id)).toEqual(['rule:2026-01-31:0', 'rule:2026-02-28:1', 'rule:2026-03-31:2', 'rule:2026-04-30:3']);
     const confirmed = { ...expense, id: 'rule:2026-02-28:1', occurrenceId: 'rule:2026-02-28:1', date: '2026-02-28' };
     const updated = projectionToSnapshot([...base, rule, r('confirm', [], confirmed, confirmed.id)], { ...status, lastSyncedAt: '2026-02-01T00:00:00Z' });
-    expect(updated.commitments.map((c) => c.dueDate)).toEqual(['2026-03-31', '2026-04-30']);
+    expect(updated.commitments.map((c) => c.dueDate)).toEqual(['2026-01-31', '2026-03-31', '2026-04-30']);
   });
   test('projection never mutates inputs and external rates are optional copied data', () => {
     const before = structuredClone(base);
@@ -214,10 +214,63 @@ describe('canonical snapshot adapter', () => {
     expect(report.snapshot.complete).toBe(false);
     expect(report.reasons.some((reason) => reason.includes('occurrenceOverride'))).toBe(true);
   });
+  test.each(['2026-10-14', '2026-10-15', '2026-10-16', '2027-01-01'])('F01: unconfirmed obligation survives before, on and after due date at %s', (date) => {
+    const rule = r('rule-r', [], { id: 'rule', start: '2026-10-15', end: '2026-10-15', frequency: 'daily', paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
+    const report = projectionToSnapshotReport([...base, rule], status, { asOf: `${date}T12:00:00Z` });
+    expect(report.snapshot.commitments).toEqual([{ id: 'rule:2026-10-15:0', dueDate: '2026-10-15', amount: { currency: 'NIO', minor: 1000 }, paidMinor: 0, kind: 'cashExpense' }]);
+    expect(report.snapshot.complete).toBe(true);
+  });
+  test('F01: confirmation removes exactly its overdue occurrence from an ended rule', () => {
+    const rule = r('rule-r', [], { id: 'rule', start: '2026-10-15', end: '2026-10-16', frequency: 'daily', paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
+    const confirmed = { ...expense, id: 'rule:2026-10-15:0', occurrenceId: 'rule:2026-10-15:0', date: '2026-10-15' };
+    const events = [...base, rule, r('confirm', [], confirmed, confirmed.id)];
+    const report = projectionToSnapshotReport(events, status, { asOf: '2026-10-17T12:00:00Z' });
+    expect(report.snapshot.commitments.map((item) => item.id)).toEqual(['rule:2026-10-16:1']);
+    expect(report.snapshot.commitments[0]?.paidMinor).toBe(0);
+    expect(report.snapshot.complete).toBe(true);
+    const confirmedSecond = { ...expense, id: 'rule:2026-10-16:1', occurrenceId: 'rule:2026-10-16:1' };
+    const fullyConfirmed = projectionToSnapshotReport([...events, r('confirm-second', [], confirmedSecond, confirmedSecond.id)], status, { asOf: '2026-10-18T12:00:00Z' });
+    expect(fullyConfirmed.snapshot.commitments).toEqual([]);
+    expect(fullyConfirmed.snapshot.complete).toBe(true);
+  });
+  test('F01: paused history cannot silently certify that overdue obligations disappeared', () => {
+    const rule = r('rule-r', [], { id: 'rule', start: '2026-10-15', frequency: 'daily', paused: true, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
+    const report = projectionToSnapshotReport([...base, rule], status, { asOf: '2026-10-16T12:00:00Z' });
+    expect(report.snapshot.complete).toBe(false);
+    expect(report.reasons.length).toBeGreaterThan(0);
+  });
+  test('F01: bounded historical expansion reports incomplete coverage rather than asserting no pending obligations', () => {
+    const rule = r('rule-r', [], { id: 'rule', start: '0001-01-01', frequency: 'daily', paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
+    const report = projectionToSnapshotReport([...base, rule], status);
+    expect(report.snapshot.complete).toBe(false);
+    expect(report.reasons.length).toBeGreaterThan(0);
+    expect(report.snapshot.commitments[0]?.id).toBe('rule:0001-01-01:0');
+    expect(SnapshotSchema.safeParse(report.snapshot).success).toBe(true);
+  });
+  test.each([
+    ['daily', '9999-12-31', '9999-12-31', ['9999-12-31']],
+    ['weekly', '9999-12-28', undefined, ['9999-12-28']],
+    ['monthly', '9999-10-31', undefined, ['9999-10-31', '9999-11-30', '9999-12-31']],
+    ['yearly', '9998-12-31', undefined, ['9998-12-31', '9999-12-31']],
+  ] as const)('F02: %s recurrence retains valid final-calendar dates when +90 days crosses 9999', (frequency, start, end, dates) => {
+    const rule = r('rule-r', [], { id: 'rule', start, ...(end ? { end } : {}), frequency, paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
+    const report = projectionToSnapshotReport([...base, rule], status, { asOf: '9999-12-30T12:00:00Z' });
+    expect(report.snapshot.commitments.map((item) => item.dueDate)).toEqual(dates);
+    expect(report.snapshot.complete).toBe(false);
+    expect(report.reasons.length).toBeGreaterThan(0);
+    expect(SnapshotSchema.safeParse(report.snapshot).success).toBe(true);
+  });
+  test('F02: the lower public year remains supported without 1900 adjustment', () => {
+    const rule = r('rule-r', [], { id: 'rule', start: '0001-01-31', end: '0001-03-31', frequency: 'monthly', paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
+    const report = projectionToSnapshotReport([...base, rule], status, { asOf: '0001-01-01T12:00:00Z' });
+    expect(report.snapshot.commitments.map((item) => item.dueDate)).toEqual(['0001-01-31', '0001-02-28', '0001-03-31']);
+    expect(report.snapshot.complete).toBe(true);
+    expect(SnapshotSchema.safeParse(report.snapshot).success).toBe(true);
+  });
   test.each([
     ['daily', '2026-10-15', '2026-10-17', ['2026-10-15', '2026-10-16', '2026-10-17']],
     ['weekly', '2026-10-15', '2026-10-29', ['2026-10-15', '2026-10-22', '2026-10-29']],
-    ['yearly', '2024-02-29', '2027-02-28', ['2027-02-28']],
+    ['yearly', '2024-02-29', '2027-02-28', ['2024-02-29', '2025-02-28', '2026-02-28', '2027-02-28']],
   ] as const)('recurrence frequency %s uses original date and stable ordinal', (frequency, start, end, dates) => {
     const rule = r('rule-r', [], { id: 'rule', start, end, frequency, paused: false, reminderDaysBefore: [], template: { kind: 'expense', accountId: 'bank', categoryId: 'food', amount: { currency: 'NIO', minor: 1000 } } }, 'rule', 'recurring');
     const snapshot = projectionToSnapshot([...base, rule], status, { asOf: frequency === 'yearly' ? '2027-01-01T00:00:00Z' : at });

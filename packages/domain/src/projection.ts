@@ -6,6 +6,8 @@ export type ProjectionOptions = { rates?: FxRate[]; asOf?: string };
 export type ProjectionReport = { snapshot: Snapshot; reasons: string[] };
 const epoch = '1970-01-01T00:00:00Z';
 const dayMs = 86_400_000;
+const lastCalendarDayMs = Date.parse('9999-12-31T00:00:00Z');
+const maxRecurringOccurrences = 10_000;
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 
 /** Strict Snapshot-compatible facade. Consumers needing diagnostics use projectionToSnapshotReport. */
@@ -107,44 +109,56 @@ function accountBeforeTombstone(events: Revision[], head: Head<unknown>): Accoun
   return parsed.success ? parsed.data : undefined;
 }
 
-function dateAt(start: string, frequency: RecurringRule['frequency'], ordinal: number): string {
+/** Never turn an extended ISO year into a truncated LocalDate. */
+function calendarDate(date: Date): string | undefined {
+  const year = date.getUTCFullYear();
+  return year >= 1 && year <= 9999 ? date.toISOString().slice(0, 10) : undefined;
+}
+
+function dateAt(start: string, frequency: RecurringRule['frequency'], ordinal: number): string | undefined {
   const origin = new Date(`${start}T00:00:00Z`);
-  if (frequency === 'daily' || frequency === 'weekly') return new Date(origin.getTime() + ordinal * dayMs * (frequency === 'weekly' ? 7 : 1)).toISOString().slice(0, 10);
+  if (frequency === 'daily' || frequency === 'weekly') return calendarDate(new Date(origin.getTime() + ordinal * dayMs * (frequency === 'weekly' ? 7 : 1)));
   const year = origin.getUTCFullYear() + (frequency === 'yearly' ? ordinal : Math.floor((origin.getUTCMonth() + ordinal) / 12));
+  if (year > 9999 || year < 1) return undefined;
   const month = frequency === 'yearly' ? origin.getUTCMonth() : (origin.getUTCMonth() + ordinal) % 12;
   const target = new Date(0);
   target.setUTCFullYear(year, month + 1, 0);
   const day = Math.min(origin.getUTCDate(), target.getUTCDate());
   target.setUTCFullYear(year, month, day);
-  return target.toISOString().slice(0, 10);
+  return calendarDate(target);
 }
 
-/** Baseline T09 adapter: cash expenses only, bounded inclusive 90-day window. No paid amounts invented. */
+/** Cash expenses: retain unconfirmed history and project through +90 days. Limits remain explicit. */
 function recurringCommitments(rule: RecurringRule, asOf: string, accounts: Account[], confirmed: Set<Id>, reasons: Set<string>): Commitment[] {
-  if (rule.paused) return [];
-  const today = new Date(asOf).toISOString().slice(0, 10);
-  const through = new Date(new Date(`${today}T00:00:00Z`).getTime() + 90 * dayMs).toISOString().slice(0, 10);
-  if (rule.start > through || (rule.end && rule.end < today)) return [];
   if (rule.template.kind === 'income') return [];
+  const today = calendarDate(new Date(asOf));
+  if (!today) { reasons.add(`Día UTC fuera del calendario admitido: ${rule.id}.`); return []; }
+  if (rule.paused) {
+    if (rule.start <= today) reasons.add(`Historial pendiente de regla pausada sin fecha de pausa: ${rule.id}.`);
+    return [];
+  }
+  const requestedThroughMs = new Date(`${today}T00:00:00Z`).getTime() + 90 * dayMs;
+  const through = calendarDate(new Date(Math.min(requestedThroughMs, lastCalendarDayMs)))!;
+  if (requestedThroughMs > lastCalendarDayMs) reasons.add(`Horizonte recurrente limitado al calendario 9999-12-31: ${rule.id}.`);
+  if (rule.start > through) return [];
   const amount = rule.template.amount;
   const account = accounts.find((item) => item.id === rule.template.accountId);
   if (rule.template.kind !== 'expense' || !amount || !account || (account.kind !== 'cash' && account.kind !== 'bank') || account.currency !== amount.currency || !rule.template.categoryId) {
     reasons.add(`Plantilla recurrente no proyectable: ${rule.id}.`);
     return [];
   }
-  // Jump near the current window, preserving ordinal from the original requested start date.
-  const start = new Date(`${rule.start}T00:00:00Z`);
-  const current = new Date(`${today}T00:00:00Z`);
-  let ordinal = rule.frequency === 'daily' || rule.frequency === 'weekly'
-    ? Math.max(0, Math.floor((current.getTime() - start.getTime()) / dayMs / (rule.frequency === 'weekly' ? 7 : 1)) - 1)
-    : Math.max(0, (current.getUTCFullYear() - start.getUTCFullYear()) * (rule.frequency === 'monthly' ? 12 : 1) + (rule.frequency === 'monthly' ? current.getUTCMonth() - start.getUTCMonth() : 0) - 1);
+  // An expired date/end is not evidence of payment. Scan from the stable original ordinal.
+  // Huge histories remain explicitly incomplete until the full occurrence engine is integrated.
+  let ordinal = 0;
   const result: Commitment[] = [];
   for (;;) {
     const date = dateAt(rule.start, rule.frequency, ordinal);
+    if (!date) { reasons.add(`Generación recurrente detenida en el límite del calendario: ${rule.id}.`); break; }
     if (date > through || (rule.end && date > rule.end)) break;
+    if (ordinal >= maxRecurringOccurrences) { reasons.add(`Cobertura histórica recurrente incompleta por límite de expansión: ${rule.id}.`); break; }
     const id = `${rule.id}:${date}:${ordinal}`;
     if (id.length > 128) { reasons.add(`ID de ocurrencia supera el límite: ${rule.id}.`); break; }
-    if (date >= today && !confirmed.has(id)) result.push({ id, dueDate: date, amount: { ...amount }, paidMinor: 0, kind: 'cashExpense' });
+    if (!confirmed.has(id)) result.push({ id, dueDate: date, amount: { ...amount }, paidMinor: 0, kind: 'cashExpense' });
     ordinal++;
   }
   return result;
