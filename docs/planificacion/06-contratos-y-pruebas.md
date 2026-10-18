@@ -260,12 +260,23 @@ Builders públicos:
 
 ```ts
 export function buildMovement(intent: MovementIntent, accounts: Account[], id: Id): Movement;
+export function buildConvertedExpense(details: {
+  id: Id; date: LocalDate; accountId: Id; amount: Money;
+  debitAmount: Money; categoryId: Id; fx?: FxRate; note?: string; linkedId?: Id;
+}, accounts: Account[]): Movement;
 export function projectionToSnapshot(revisions: Revision[], status: SyncStatus): Snapshot;
+export type ProjectionOptions = { rates?: FxRate[]; asOf?: string };
+export function projectionToSnapshotReport(revisions: Revision[], status: SyncStatus,
+  options?: ProjectionOptions): { snapshot: Snapshot; reasons: string[] };
 export function resolveRevision<T>(heads: Revision<T>[], chosen: T | null,
   id: Id, deviceId: Id, nowIso: string): Revision<T>;
 ```
 
 Valuación patrimonial de una inversión sustituye su saldo contable de costo por la última valoración, nunca suma ambos. Cuenta por cobrar entra en patrimonio, no en liquidez. El saldo inicial de inversión se registra una vez; la fórmula de ganancia usa initialValue aparte de contributions. Datos sin valoración posterior muestran valor inicial etiquetado como tal.
+
+projectionToSnapshot admite también options como tercer parámetro compatible; usar asOf explícito e inyectar rates de la fuente de cambio. El adaptador de diagnóstico permite mostrar datos incompletos sin alterar la forma pública de Snapshot. Hasta implementar los adaptadores de tarjetas/préstamos/overrides en sus tareas, dichas entidades marcan complete=false y reasons; no inventar compromisos. Este es un estado de construcción, no una limitación aceptada para entregar la app completa.
+
+buildConvertedExpense requiere fx en ejecución (MISSING_RATE si falta), conserva amount como precio original, debitAmount como efectivo pagado y cuenta en moneda de débito. Construye cuatro apuntes balanceados mediante puente de cambio y un solo flujo de gasto original. No inventa ingreso por la conversión. El campo opcional de entrada permite explicar falta de dato antes de confirmar; no significa que se pueda persistir sin tasa.
 
 Cuotas de tarjetas y pagos requieren asignaciones derivadas de ledger y plan, no edición de banderas paid desde UI. Todo listado de compromisos usa fecha, importe pendiente y enlace de procedencia estable; eliminar/editar origen recalcula la proyección en lugar de mantener copias huérfanas.
 

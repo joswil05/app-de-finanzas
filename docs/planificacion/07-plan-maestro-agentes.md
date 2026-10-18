@@ -15,7 +15,7 @@
 
 ## Global Constraints
 
-- Solo planificación hasta que el usuario indique comenzar la construcción.
+- Construcción local autorizada; publicación externa y facturación requieren autorización aplicable.
 - PWA para iOS y Android, principalmente móvil; escritorio funcional.
 - Presupuesto inicial de servicios: US$0; no activar planes con facturación automáticamente.
 - Monedas admitidas: NIO y USD; importes internos en centavos enteros seguros.
@@ -40,7 +40,7 @@
 7. Ejecutar primero el test nuevo y comprobar fallo pertinente (módulo ausente o comportamiento aún no implementado). Si pasa desde el principio, comprobar que sí prueba la necesidad. Implementar, ejecutar y registrar resultados reales.
 8. Cada tarea termina con revisión de requisitos y después calidad/seguridad. Corregir hallazgos y repetir solo lo afectado. Commit local por tarea cuando exista Git; nunca incluir secretos ni outputs voluminosos.
 9. Un fallo externo no se arregla fingiendo éxito. Emuladores permiten avanzar módulos independientes; el estado de integración permanece bloqueado hasta prueba real.
-10. No iniciar trabajo funcional hasta autorización del usuario. Esta entrega solo escribe documentación.
+10. El usuario autorizó iniciar construcción después de confirmar usuarios independientes. Ejecutar tareas locales; las acciones externas siguen los límites de autorización indicados.
 
 ## Autonomía para investigar y adaptar el plan
 
@@ -311,6 +311,8 @@ const resolution: Revision = {
 **Dependencias:** T04; Firebase emulator de T01.
 **Archivos a crear o modificar:** `apps/web/src/data/firebase.ts`, `apps/web/src/data/firestore-repository.ts`, `apps/web/src/data/outbox.ts`, `apps/web/src/data/use-snapshot.ts`, `firestore.rules`, `firestore.indexes.json`, `tests/rules/isolation.test.ts`, `tests/data/repository.test.ts`.
 **Interfaces consumidas/producidas:** Implementa RevisionRepository. useSnapshot(): {snapshot: Snapshot; status: SyncStatus}. Provee IndexedDB outbox para comandos hasta ACK; no duplica proyección del libro.
+
+Coordinación de ejecución: la integración React `use-snapshot.ts` se entrega en T08 sobre el repositorio y proyector aprobados; el repositorio T05 mantiene la fuente única de revisiones/estado. El hook debe desmontarse y descartar su estado al bloquear/cerrar/cambiar UID, pasar el reloj explícito al proyector y conservar razones de incompletitud. Esta transferencia no elimina el entregable.
 
 - [ ] **1. Preparar contrato y prueba.** Leer reglas aplicables de especificación e inventario, confirmar dependencias y añadir el caso mínimo siguiente al archivo de test indicado, junto con los vectores exigidos.
 ```ts

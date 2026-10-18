@@ -1,6 +1,6 @@
 # Especificación consolidada — Finanzas personales
 
-Fecha: 2026-10-15. Versión: 1.0 de planificación. No se ha iniciado implementación.
+Fecha: 2026-10-15. Versión: 1.1, usuarios independientes. Construcción autorizada y comenzada; estado real en docs/ejecucion/estado.md.
 
 ## Autoridad y alcance
 
@@ -12,7 +12,7 @@ Actualización de autonomía: los agentes pueden adaptar decisiones técnicas co
 
 ## Requisitos globales
 
-- Solo planificación hasta que el usuario indique comenzar la construcción.
+- Construcción local autorizada; publicación externa y facturación requieren autorización aplicable.
 - PWA para iOS y Android, principalmente móvil; escritorio funcional.
 - Presupuesto inicial de servicios: US$0; no activar planes con facturación automáticamente.
 - Monedas admitidas: NIO y USD; importes internos en centavos enteros seguros.
@@ -146,6 +146,8 @@ Respaldo exportado: JSON versionado con revisiones, configuraciones financieras 
 Registro servidor de ocurrencias sincronizadas con dueAt UTC y zona original; consulta indexada de pendientes, lotes máximos de 10 por ejecución y presupuesto de subsolicitudes. Worker cada 15 minutos; 96 ejecuciones/día. Cuenta de servicio mínima, secretos en Cloudflare; uso de IAM requiere validación explícita del namespace y dispositivos de cada usuario en Worker. Mensaje genérico en pantalla bloqueada por defecto. TTL limita entrega de avisos obsoletos.
 
 El Worker de recordatorios consulta pendientes mediante índice collection group reminders con cursor persistente y equidad entre usuarios; no enumera todas las cuentas ni procesa siempre al primer usuario. El namespace de la ruta es autoridad: reminder.uid debe coincidir con users/{uid}, y solo pueden usarse tokens de devices bajo ese mismo UID. La clave de entrega incluye UID+occurrenceId+deviceId. No enviar a B un aviso de A aunque IDs locales coincidan. La cuenta de servicio usa IAM, por lo que el Worker valida explícitamente estas relaciones y no asume que lo harán las rules.
+
+Una suscripción push del mismo navegador puede persistir al cambiar de identidad. T19 debe desactivar la asociación anterior y comprobar propiedad activa del token antes de enviar. Usar registro servidor privado pushBindings/{sha256(token)} con UID/dispositivo activo, actualizado al registrar un dispositivo mediante sesión verificada; al reasignar a B, avisos de A a ese token quedan inválidos. El cliente no enumera ese registro. Logout intenta desregistrar/revocar y la UI no atribuye una notificación antigua a la sesión nueva. Incluir este caso en V37, además de las rutas por UID; separar datos en Firestore por sí solo no resuelve la reutilización del token.
 
 No garantizar entrega exactamente una vez: reclamación con lease, registro de intentos, reintentos limitados, clave ocurrencia/dispositivo y tag de colapso. Confirmación sincronizada cancela futuros envíos. Cambios offline aún no sincronizados pueden producir aviso desactualizado; abrir la app muestra la verdad local. Registrar diagnósticos sin importes/notas.
 

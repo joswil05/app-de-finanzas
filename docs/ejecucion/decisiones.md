@@ -1,6 +1,6 @@
 # Registro de decisiones de ejecución
 
-Registrar aquí cambios materiales conforme a la política de autonomía del plan maestro. La construcción aún no ha comenzado.
+Registrar aquí cambios materiales conforme a la política de autonomía del plan maestro. La construcción comenzó por autorización del usuario.
 
 ## Formato por decisión
 

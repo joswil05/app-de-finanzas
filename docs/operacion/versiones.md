@@ -62,8 +62,12 @@ Vite lee .env desde la raíz del repositorio (envDir), junto a .env.example. Cop
 
 Utilidad de pruebas de persistencia añadida por T05: fake-indexeddb 6.2.5, Node >=18 ([metadatos oficiales](https://registry.npmjs.org/fake-indexeddb)).
 
-npm run dev sirve la app local. npm run typecheck revisa configuraciones/tests y los seis espacios. npm run lint revisa fuentes. npm test incluye solo setup, contratos, dominio, data, workers, ai y UI; excluye rules/e2e. npm run test:rules usa exclusivamente Vitest rules con emuladores Auth/Firestore y proyecto ficticio demo-finanzas. npm run test:e2e usa Playwright con emuladores y build servido, en Chromium/escritorio y perfiles móviles Chromium/WebKit. Los perfiles móviles no certifican hardware real.
+npm run dev sirve la app local. npm run typecheck revisa configuraciones/tests y los seis espacios. npm run lint revisa fuentes. npm test incluye solo setup, contratos, dominio, data, workers, ai y UI; excluye rules/e2e. npm run test:rules usa Vitest rules con Firestore dedicado8180 y proyecto ficticio demo-finanzas-tests; npm run test:e2e añade Auth9109 y Playwright con build servido, en Chromium/escritorio y perfiles móviles Chromium/WebKit. Los perfiles móviles no certifican hardware real. Configuración aislada firebase.rules-test.json, hub4409 y logs4509; no utilizar puertos ajenos8080/9099.
 
 npm run build compila los paquetes, crea la app y empaqueta Workers mediante wrangler deploy --dry-run: ese comando no publica. Los Workers bootstrap responden 503 y no implementan integraciones. No hay cron configurado. El plugin PWA está instalado, pero un único service worker Workbox+FCM se integrará en T19/T22; esta base no promete disponibilidad offline.
 
 Firestore rules/índices y suites correspondientes llegan en T05; las suites E2E llegan desde T06. Los comandos separados deben fallar ante ausencia de pruebas o reglas, nunca simular aprobación. Los secretos solo se configuran fuera del repositorio; no hay allowlist de un único propietario.
+
+Actualización2026-10-18: override de @grpc/grpc-js1.13.6 exclusivamente bajo @firebase/firestore4.18.0; mantiene Firebase13.0.0 y ramas firebase-tools1.14.6. Justificación/pruebas en seguridad-dependencias.md. No usar npm audit fix --force para bajar Firebase.
+
+En el sandbox de escritorio, Wrangler puede emitir EPERM al escribir logs fuera del proyecto aunque su dry-run devuelva0. Para verificar los Workers sin ese error, establecer WRANGLER_LOG_PATH a una carpeta dentro de `.wrangler/logs/` del workspace y WRANGLER_SEND_METRICS=false durante la ejecución. Repetición focal de ambos Workers con estas variables: exit0 sin error de log; no equivale a despliegue ni prueba de integración externa.

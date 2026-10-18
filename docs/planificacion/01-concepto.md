@@ -1,6 +1,6 @@
 # App de finanzas personales — concepto y decisiones
 
-Fecha: 2026-10-15. Estado: usuario elige PWA y prefiere Firebase; detalles de arquitectura en definición. Solo planificación, sin autorización para iniciar implementación.
+Fecha: 2026-10-15. Estado: PWA/Firebase y usuarios independientes confirmados; construcción autorizada y en curso. Consultar docs/ejecucion/estado.md para progreso real.
 
 ## Objetivo
 
