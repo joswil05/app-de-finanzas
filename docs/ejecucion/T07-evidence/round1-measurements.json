@@ -1,0 +1,140 @@
+{
+  "reportPage": {
+    "viewport": 320,
+    "scrollWidth": 320,
+    "links": [
+      {
+        "label": "Avisos",
+        "width": 92.296875,
+        "height": 44
+      },
+      {
+        "label": "Ajustes",
+        "width": 97.71875,
+        "height": 44
+      },
+      {
+        "label": "Volver a Inicio",
+        "width": 113.234375,
+        "height": 44
+      }
+    ]
+  },
+  "homePage": {
+    "viewport": 320,
+    "scrollWidth": 320,
+    "links": [
+      {
+        "label": "Avisos",
+        "width": 92.296875,
+        "height": 44
+      },
+      {
+        "label": "Ajustes",
+        "width": 97.71875,
+        "height": 44
+      },
+      {
+        "label": "Reportes",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Simulador de compra",
+        "width": 288,
+        "height": 48
+      }
+    ]
+  },
+  "authInput": {
+    "border": "rgb(117, 133, 154)",
+    "background": "rgb(255, 255, 255)",
+    "contrast": 3.764782238664888
+  },
+  "formFields": [
+    {
+      "label": "Importe",
+      "border": "rgb(117, 133, 154)",
+      "background": "rgb(255, 255, 255)",
+      "contrast": 3.764782238664888
+    },
+    {
+      "label": "Cuenta",
+      "border": "rgb(117, 133, 154)",
+      "background": "rgb(255, 255, 255)",
+      "contrast": 3.764782238664888
+    },
+    {
+      "label": "Nota",
+      "border": "rgb(117, 133, 154)",
+      "background": "rgb(255, 255, 255)",
+      "contrast": 3.764782238664888
+    }
+  ],
+  "settingsPage": {
+    "viewport": 320,
+    "scrollWidth": 320,
+    "links": [
+      {
+        "label": "Avisos",
+        "width": 92.296875,
+        "height": 44
+      },
+      {
+        "label": "Ajustes",
+        "width": 97.71875,
+        "height": 44
+      },
+      {
+        "label": "Presupuestos",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Metas",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Agenda",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Préstamos",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Inversiones",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Reportes",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Simulador de compra",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Avisos",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Sincronización",
+        "width": 288,
+        "height": 48
+      },
+      {
+        "label": "Volver a Inicio",
+        "width": 113.234375,
+        "height": 44
+      }
+    ]
+  }
+}
