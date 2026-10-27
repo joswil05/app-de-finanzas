@@ -22,7 +22,8 @@ export function ApplicationRoutes({ controller }: { controller: SessionControlle
   if (session.locked) return <LockPage controller={controller} />;
   if (!session.profile) return <AccessFrame title="Preparando tu espacio"><p role="status">Cargando tu configuración…</p></AccessFrame>;
   if (!session.profile.setupComplete) return <OnboardingPage key={session.user.uid} controller={controller} />;
-  return <FinancialRoutes key={session.user.uid} homeTitle={session.profile.displayName ? `Hola, ${session.profile.displayName}` : 'Tu espacio está listo'} home={<><p className={styles.hint}>Base financiera en construcción. Tu acceso y configuración están preparados; las pantallas para consultar y registrar tus finanzas se incorporan en la siguiente etapa.</p><div className={styles.form}>{controller.hasPin ? <button className={styles.button} onClick={controller.lock}>Bloquear ahora</button> : <InitialDevicePin controller={controller} />}<AccountLinks controller={controller} /><LogoutButton controller={controller} /></div></>} />;
+  const accountControls = <div className={styles.form}>{controller.hasPin ? <button className={styles.secondary} onClick={controller.lock}>Bloquear ahora</button> : <InitialDevicePin controller={controller} />}<AccountLinks controller={controller} /><LogoutButton controller={controller} /></div>;
+  return <FinancialRoutes key={session.user.uid} homeTitle={session.profile.displayName ? `Hola, ${session.profile.displayName}` : 'Tu espacio está listo'} home={<><p className={styles.hint}>Base financiera en construcción. Tu acceso y configuración están preparados; las pantallas para consultar y registrar tus finanzas se incorporan en la siguiente etapa.</p>{accountControls}</>} profile={{ displayName: session.profile.displayName, email: session.user.email }} accountControls={accountControls} />;
 }
 
 function InitialDevicePin({ controller }: { controller: SessionController }) {

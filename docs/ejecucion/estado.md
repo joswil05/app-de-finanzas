@@ -7,11 +7,11 @@ Fecha de creación: 2026-10-15. Construcción autorizada por el usuario y comenz
 | T01 | Base reproducible y validación temprana de servicios | HECHA | T01.md:instalación/build/typecheck locales verificados y omisiones corregidas; G01 externa sigue abierta |
 | T02 | Contratos, esquemas y datos ficticios compartidos | HECHA | T02.md:17 pruebas PASS, typecheck/lint finales PASS; revisión independiente aprobada |
 | T03 | Dinero, conversión y libro financiero | HECHA | T03.md:54 pruebas PASS y revisión independiente aprobada; regresión71/71 con contratos tras corrección gRPC |
-| T04 | Revisiones inmutables y resolución de conflictos | EN CORRECCIÓN | Revisión independiente: F01 vencidos sin confirmar omitidos con complete=true; F02 horizonte cerca de9999; corrección pendiente |
-| T05 | Repositorio Firestore, bandeja local y reglas | EN REVISIÓN | Candidata ronda1 para F01–F03;20 pruebas de datos PASS; reevaluación independiente pendiente |
-| T06 | Acceso, configuración inicial y bloqueo | EN REVISIÓN | Registro/verificación, onboarding y PIN por UID;27 E2E de acceso PASS también en corrida integrada; revisión independiente pendiente |
-| T07 | Sistema visual, navegación y componentes compartidos | EN REVISIÓN |25 pruebas de componentes PASS; shell integrado, catálogo24rutas,6 E2E navegación PASS; revisión independiente pendiente |
-| T08 | Cuentas y registro rápido de movimientos | NO INICIADA | Se generará docs/ejecucion/T08.md al ejecutar |
+| T04 | Revisiones inmutables y resolución de conflictos | HECHA |410ac55:51 pruebas PASS, typecheck/lint; revisión focal F01/F02 ADDRESSED, especificación/calidad aprobadas |
+| T05 | Repositorio Firestore, bandeja local y reglas | HECHA |18e6252:25 pruebas de datos PASS y7 reglas previas sin cambios; R01/R02 ADDRESSED, especificación/calidad aprobadas; hook transferido explícitamente aT08 |
+| T06 | Acceso, configuración inicial y bloqueo | HECHA |f694ce3:I1–I3 ADDRESSED, especificación/calidad aprobadas;24unit/UI y12E2E focales PASS; check integrado201PASS |
+| T07 | Sistema visual, navegación y componentes compartidos | EN REVISIÓN VISUAL |Corrección técnica c59d046 aprobada y12E2E navegación PASS; usuario rechazó acabado de captura técnica; jerarquía/composición en corrección antes de cierre |
+| T08 | Cuentas y registro rápido de movimientos | EN CURSO PARCIAL |Núcleo de borradores y provider de datos en ejecución independiente; frontend espera acabadoT07 |
 | T09 | Tarjetas, ciclos y compras a cuotas | NO INICIADA | Se generará docs/ejecucion/T09.md al ejecutar |
 | T10 | Presupuestos mensuales | NO INICIADA | Se generará docs/ejecucion/T10.md al ejecutar |
 | T11 | Metas, disponible estimado e Inicio | NO INICIADA | Se generará docs/ejecucion/T11.md al ejecutar |
@@ -37,15 +37,23 @@ Firebase, iOS/Android físicos, IA/ZDR, Workers/CPU, push y BCN: NO EJECUTADO. S
 
 ## Próximo paso autorizado
 
-Continuar T01 y tareas elegibles, conservar documentos y actualizar este registro con evidencia. El usuario indicó «continua, luego inicia a ejecutar el plan» tras confirmar usuarios independientes. Publicación y facturación no están autorizadas por esta instrucción.
+Terminar corrección visual T07 solicitada por el usuario y continuar T08 y tareas elegibles, conservando documentos y evidencia. El usuario indicó «continua, luego inicia a ejecutar el plan» tras confirmar usuarios independientes. Publicación y facturación no están autorizadas por esta instrucción.
 
 ## Corte de avance — 2026-10-18
 
-3/24 tareas cerradas y verificadas = **12,5% por etapas cerradas**. T04–T07 tienen implementación avanzada, pero no se cuentan como terminadas. Las tareas tienen tamaños distintos; este porcentaje no estima horas restantes ni implica que las pantallas financieras estén listas.
+6/24 tareas cerradas y verificadas = **25% por etapas cerradas**. T07/T08 tienen trabajo avanzado/parcial, pero no se cuentan como terminadas. Las tareas tienen tamaños distintos; este porcentaje no estima horas restantes ni implica que las pantallas financieras estén listas.
 
 Comprobación integrada del coordinador: typecheck/lint y168 pruebas locales aprobados; app/paquetes empaquetados. Los Workers necesitaron repetir solo dry-run con logs dentro del workspace para resolver EPERM; ambos exit0 sin error de log. Sigue advertencia de tamaño del bundle web para optimización futura. Ningún servicio desplegado.
 
 Recorrido integrado final:33/33 E2E (27de acceso y6de navegación) en3perfiles aprobadas, exit0; emuladores propios detenidos. Las pantallas financieras futuras se muestran como preparación, no como funcionalidades disponibles.
 
 Los tres agentes activos fueron interrumpidos por límite de uso del servicio durante sus cierres/revisiones. Fuentes y reportes se conservan; no se marcan revisiones pendientes como aprobadas por falta de cuota. Próximo bloque: corregir/revisar T04, reevaluar la ronda1 T05 y revisar T06/T07 antes de aceptar T08.
+
+Reanudación posterior por «continua»: agentes activos nuevamente. T04 candidata410ac55 conserva vencidos y controla calendario,51 pruebas PASS, en revisión focal. T05 originales F01–F03 ADDRESSED, nuevos R01/R02 en corrección ronda2. T06 hallazgos I1–I3 en corrección ronda1. No asumir cierre por pruebas principales ya aprobadas.
+
+T04: nueva revisión focal aprobada, F01/F02 ADDRESSED sin nuevas rupturas importantes; etapa cerrada. T07 revisión independiente en ejecución sobre componentes y router. T05/T06 continúan en corrección.
+
+T05: ronda2 aprobada, R01/R02 ADDRESSED sin nuevas rupturas importantes; etapa cerrada con hook transferido aT08. T06 sigue en corrección de carreras y T07 corrige enlaces secundarios/contraste/objetivo táctil. Comprobación global nueva se ejecutará al integrar esos cambios, sin repetir reglas intactas.
+
+Último check del coordinador en f694ce3:201/201 pruebas, typecheck/lint y seis builds PASS, sin error de logs Worker. T06 revisión focal aprobada. T07 navegación ampliada12/12 en3perfiles PASS, emuladores detenidos; cumplimiento técnico aprobado. Observación posterior del usuario sobre la captura exige mejorar el acabado antes de cerrar T07: ver DESIGN.md y reporte visual independiente. La captura con input/botón de prueba no representa la interfaz final, y las medidas no equivalen a aprobación estética.
 

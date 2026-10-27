@@ -25,3 +25,19 @@ Formularios importe/cuenta/categoría primero, detalles opcionales. Un favorito 
 ## Validación
 
 Contraste debe comprobarse con implementación real. Probar longitud de importes, lista larga, textos ampliados, teclado virtual, offline, vacíos y errores en ambos sistemas. Contenido y acciones normativos en docs/planificacion/04-inventario-interfaces.md. Inventario es revisable según política de autonomía del plan maestro.
+
+## Corrección visual solicitada por el usuario — 2026-10-18
+
+La captura técnica de ajustes fue rechazada como referencia de acabado. Sus pruebas de contraste/navegación siguen siendo evidencia técnica; no constituyen aprobación visual. El estilo final debe sentirse cuidado, equilibrado y propio de una app móvil de finanzas, dentro de esta paleta y tipografía del sistema. No hace falta una nueva identidad de marca ni una maqueta separada.
+
+Tesis espacial: primero reconocer dónde estoy y qué puedo hacer; después ver mi cuenta y grupos de herramientas con peso distinto. El color de acción se reserva para Registrar y la selección vigente. Ajustes no es una lista de enlaces azules de igual importancia.
+
+| Antes | Después | Motivo |
+|---|---|---|
+| Encabezado de tres filas con acciones compitiendo | Título breve y dos utilidades discretas; Registrar en ubicación móvil consistente y al alcance del pulgar | Recuperar espacio útil y jerarquía |
+| Nueve enlaces azules idénticos | Grupos por propósito, etiquetas neutras, iconos coherentes y separadores contenidos | Escaneo y reconocimiento |
+| Campo/botón de prueba en captura | Cuenta y controles reales de la app; sin fixtures insertadas para presentar el acabado | Evaluar el producto real |
+| Palabras cortadas dentro de la barra inferior | Etiquetas completas, cinco destinos legibles a320px; reflujo por controles completos con texto ampliado | Evitar apariencia rota sin reducir legibilidad |
+| Aprobación solo por medidas | Inspección visual móvil/escritorio de composición, ritmo, densidad y estados, además de accesibilidad | Las métricas no sustituyen el criterio visual |
+
+Mantener controles44px, contraste, áreas seguras, foco y protección de formularios. Animaciones solo de respuesta/estado, discretas y cancelables; no coreografía de páginas. Revisar en una tanda móvil/escritorio con contenido real de prueba dentro de la app, corregir en un solo lote y confirmar una vez. El cierre visual T07 queda abierto hasta ese pase.
